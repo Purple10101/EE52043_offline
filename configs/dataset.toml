@@ -1,11 +1,15 @@
 # Dataset building: work area, tiling, splits, labels and synthetic data.
 
 [work_area]
-# Full-frame pixel rectangle covering the arm's reach (about 450 x 225 mm). Tiles are cut from here.
-x0 = 0                    # placeholder
-y0 = 0                    # placeholder
-x1 = 4608                 # placeholder
-y1 = 2592                 # placeholder
+# Box in the frame where resistors lie, the same for every frame. Synthetic resistors (body and
+# leads) are kept wholly inside it, and tiles are cut from it. Full-frame px; must fit the frame.
+x0 = 504                  # placeholder: centred in the 4608 x 2592 frame
+y0 = 396                  # placeholder
+width = 3600              # placeholder: about 367 x 184 mm at 9.8 px/mm
+height = 1800             # placeholder
+
+[scale]
+px_per_mm = 9.8           # placeholder until calibration, at the table surface
 
 [tiles]
 size = 1024               # px, cut at full resolution (a 1/4 W body is about 24 x 62 px)
@@ -26,11 +30,19 @@ simplify_epsilon_px = 1.0 # approxPolyDP tolerance when masks become polygons
 [autolabel]
 diff_threshold = 25       # Lab distance from the empty-table frame
 min_body_width_mm = 2.4   # opening kernel is half of this, removing leads but not bodies
-px_per_mm = 9.8           # placeholder until calibration
 
 [synthetic]
-frames = 1000
-bodies_per_frame = [5, 25]
-touching_fraction = 0.3   # share of bodies placed against a neighbour
-overlap_fraction = 0.1    # share placed partly over a neighbour
+# Settings for `python -m robot_offline.synth`. Lighting, colours and package sizes are constants
+# at the top of src/robot_offline/synth.py.
+frames = 100
+bodies_per_frame = [5, 25]  # bodies that do not fit after 30 tries are skipped
+touching_fraction = 0.0   # chance a new body is placed against a lone body, making a pair
+overlap_fraction = 0.0    # chance it is placed partly over a lone body instead
+min_gap_mm = 15           # body-to-body gap between everything except the two in a pair
+lead_length_mm = [15, 28] # each lead, from the end cap; leads never cross a body
+bent_lead_fraction = 0.1  # share of leads with one bend; the rest are straight
+max_bend_deg = 20         # largest bend angle
+empty_fraction = 0.05     # frames with no resistors, for false detections
+distractors_per_frame = [0, 8]  # unlabelled lead offcuts and crumbs
+jpeg_quality = [85, 95]   # frames are saved as JPEG, like the camera's MJPG stream
 seed = 0

@@ -29,7 +29,7 @@ proves too coarse, Mask R-CNN (28 × 28 mask per body) is the fallback.
 | | Amount |
 |---|---|
 | Proof of concept | ~50 real frames (~750 bodies) |
-| Usable | 150–250 real frames, or 50–100 real plus ~1000 synthetic |
+| Usable | 150–250 real frames, or 50–100 real plus ~100 synthetic |
 | Test | ~25 real frames from separate sessions, never synthetic |
 
 Coverage matters more than count. The real frames must include:
@@ -43,8 +43,9 @@ Coverage matters more than count. The real frames must include:
 
 ## Labelling, cheapest first
 
-1. **Synthetic copy-paste.** Cut clean bodies out of spread-out scenes with `autolabel`, then paste
-   them onto empty-table frames at random poses, including touching and overlapping. Labels are exact.
+1. **Synthetic.** `synth` draws resistors (shaded bodies, bands, leads, shadows) at random poses,
+   including touching and overlapping, onto procedural backdrops now and onto real empty-table
+   frames once we have them. Labels are exact. Later, paste real cut-outs from spread-out scenes.
 2. **Auto-label and fix.** `autolabel` real frames, then fix only the merged or broken outlines.
 3. **SAM-assisted** in CVAT or Label Studio, one click per body, for frames autolabel handles badly.
 
@@ -59,7 +60,7 @@ Run on the real test sessions only. Match predictions to labels, then report in 
 
 ## Order of work
 
-1. Scaffold, `config`, `manifest`, `visualise` (no camera needed).
+1. Scaffold, `config`, `manifest`, `visualise`, a first `synth` set (no camera needed).
 2. Camera arrives (week of 12 Oct): `capture`, then the backdrop and lighting session.
 3. `autolabel` and `cutouts` on spread-out scenes.
 4. Real scene captures, label fixing.

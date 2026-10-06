@@ -14,6 +14,7 @@ MODULES = [
     "train",
     "evaluate",
     "visualise",
+    "clean_synth",
 ]
 
 
