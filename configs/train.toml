@@ -1,0 +1,24 @@
+# YOLO-seg fine-tuning. Values pass straight through to ultralytics.
+
+[model]
+weights = "yolov8m-seg.pt"  # COCO-pretrained start point
+
+[train]
+imgsz = 1024              # must equal [tiles] size in dataset.toml
+epochs = 100
+batch = 8
+device = 0
+patience = 20
+project = "runs"
+name = "resistor_seg"
+
+[augment]
+# Fixed overhead camera: rotations and flips are realistic, scale changes are not.
+degrees = 180
+fliplr = 0.5
+flipud = 0.5
+scale = 0.1
+hsv_h = 0.01              # small: band colours must stay recognisable for the classifier crop
+hsv_s = 0.3
+hsv_v = 0.3
+mosaic = 1.0

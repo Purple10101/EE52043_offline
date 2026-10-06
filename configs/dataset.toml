@@ -1,0 +1,36 @@
+# Dataset building: work area, tiling, splits, labels and synthetic data.
+
+[work_area]
+# Full-frame pixel rectangle covering the arm's reach (about 450 x 225 mm). Tiles are cut from here.
+x0 = 0                    # placeholder
+y0 = 0                    # placeholder
+x1 = 4608                 # placeholder
+y1 = 2592                 # placeholder
+
+[tiles]
+size = 1024               # px, cut at full resolution (a 1/4 W body is about 24 x 62 px)
+overlap = 128             # px, larger than the longest body so every body is whole in some tile
+min_visible_fraction = 0.6  # a body clipped by a tile edge is kept only if this much is inside
+
+[splits]
+# Split by session, never by frame, so test frames are from a session the model has not seen.
+# Synthetic frames are always train.
+val_sessions = []
+test_sessions = []
+
+[labels]
+classes = ["resistor_body"]
+rules_version = 1         # bump when docs/labelling.md changes meaning
+simplify_epsilon_px = 1.0 # approxPolyDP tolerance when masks become polygons
+
+[autolabel]
+diff_threshold = 25       # Lab distance from the empty-table frame
+min_body_width_mm = 2.4   # opening kernel is half of this, removing leads but not bodies
+px_per_mm = 9.8           # placeholder until calibration
+
+[synthetic]
+frames = 1000
+bodies_per_frame = [5, 25]
+touching_fraction = 0.3   # share of bodies placed against a neighbour
+overlap_fraction = 0.1    # share placed partly over a neighbour
+seed = 0

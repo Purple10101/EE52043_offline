@@ -1,0 +1,18 @@
+# Overhead camera: Arducam IMX708 USB2 (B030401) through OpenCV DirectShow.
+# Keep in step with the robot repo's camera settings: training and live frames must match.
+
+[camera]
+index = 0                 # placeholder: DirectShow device index
+fourcc = "MJPG"
+width = 4608              # native mode; the 4:3 modes look upscaled
+height = 2592
+autofocus = false
+focus = 0                 # placeholder: set once at mounting height (~40 cm)
+auto_exposure = false
+exposure = -6             # placeholder
+auto_white_balance = false
+white_balance = 4600      # placeholder, kelvin
+
+[capture]
+warmup_frames = 10        # frames discarded after opening, so exposure settles
+image_format = "png"      # lossless: MJPG is already compressed, do not recompress
