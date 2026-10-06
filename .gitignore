@@ -18,5 +18,6 @@ Thumbs.db
 data/*
 !data/README.md
 runs/
+weights/
 *.pt
 *.onnx

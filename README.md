@@ -81,9 +81,12 @@ never touched.
   - `train` - fine-tunes a COCO-pretrained YOLO-seg model.
   - `evaluate` - scores the model on the real test sessions in mm and degrees.
   - `visualise` - draws polygons and predictions over frames.
+  - `notebooks/` - experiments; `synth_performance_evaluation.ipynb` trains on the synthetic set
+    and scores a COCO-pretrained YOLOv8m-seg before and after tuning.
 - `configs/` - camera, dataset and training settings.
 - `data/` - images and labels. Not in git; see [data/README.md](data/README.md).
 - `runs/` - training output. Not in git.
+- `weights/` - downloaded pretrained checkpoints. Not in git.
 - `tests/` - tests for the package.
 
 ## Setup
@@ -91,8 +94,8 @@ never touched.
 ```
 python -m venv .venv
 .venv\Scripts\activate
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
-pip install -e .[dev]
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+pip install -e .[dev,notebook]
 ```
 
 Install the CUDA build of torch first so ultralytics does not pull in the CPU-only one. Python 3.11+
