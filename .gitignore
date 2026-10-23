@@ -21,3 +21,5 @@ runs/
 weights/
 *.pt
 *.onnx
+# Released models are kept, in Git LFS (see .gitattributes)
+!models/**/*.pt
