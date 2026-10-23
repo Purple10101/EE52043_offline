@@ -8,6 +8,10 @@ and dataset.yaml. Splits by session from configs/dataset.toml; synthetic frames 
 Tiles keep their source format: PNG captures give PNG tiles, synthetic JPEG frames give JPEG tiles
 at quality 100, so they are not visibly compressed twice. Tiles with no bodies are kept, with an
 empty label file, so the model sees empty table. The output folder is replaced on every export.
+
+Every frame is masked first (rectify.mask_outside_plate): nothing off the plate reaches the model,
+in training as in use. Frames must be rectified ("space": "rectified" in the manifest); raw camera
+frames are refused until their rectification is part of the export.
 """
 
 import argparse
@@ -16,7 +20,15 @@ from pathlib import Path
 
 import cv2
 
-from robot_offline import config, manifest, tiling
+from robot_offline import config, manifest, rectify, tiling
+
+
+def model_image(sample, image, rect_settings):
+    """The image as the model must see it: off-plate masked. Raises ValueError for raw frames."""
+    if sample.get("space") != "rectified":
+        raise ValueError(f"{sample['image']}: not a rectified frame, so it cannot be masked to the plate. "
+                         "Regenerate old synthetic sets with `synth`; real frames need rectifying first.")
+    return rectify.mask_outside_plate(image, rect_settings)
 
 SPLITS = ("train", "val", "test")
 
@@ -46,12 +58,14 @@ def yolo_line(points, size):
 
 
 def export(samples, splits, out_dir, work_area, tile_size, overlap, min_visible_fraction,
-           class_names=("resistor_body",)):
+           class_names=("resistor_body",), rect_settings=None):
     """Writes a YOLO-seg tile dataset of samples to out_dir. Returns the path of dataset.yaml.
 
     splits: {session: "train" | "val" | "test"}; samples of other sessions are skipped.
-    work_area: x0, y0, width, height in full-frame px.
+    work_area: x0, y0, width, height in frame px. rect_settings: the rectified geometry, for the
+    plate mask (default from configs/dataset.toml).
     """
+    rect_settings = rect_settings or rectify.Settings.from_config()
     out_dir = Path(out_dir)
     if out_dir.exists():
         shutil.rmtree(out_dir)
@@ -68,6 +82,7 @@ def export(samples, splits, out_dir, work_area, tile_size, overlap, min_visible_
         image = cv2.imread(str(src))
         if image is None:
             raise FileNotFoundError(src)
+        image = model_image(sample, image, rect_settings)
         polygons = manifest.polygons(sample)
         stem = f"{sample['session']}_{Path(sample['image']).stem}"
         frame_tiles = tiling.tiles(work_area, (sample["width"], sample["height"]), tile_size, overlap)

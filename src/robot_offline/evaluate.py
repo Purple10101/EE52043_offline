@@ -20,7 +20,7 @@ import numpy as np
 from shapely.geometry import Polygon
 from shapely.strtree import STRtree
 
-from robot_offline import config, manifest, tiling
+from robot_offline import config, export_yolo, manifest, rectify, tiling
 
 MATCH_IOU = 0.5
 PART_OF = 0.2               # a prediction covering this much of a body counts towards a merge
@@ -154,9 +154,10 @@ def evaluate_samples(model, samples, conf=0.25, **predict_kwargs):
     work_area = (area["x0"], area["y0"], area["width"], area["height"])
     px_per_mm = ds["scale"]["px_per_mm"]
     eps = ds["labels"]["simplify_epsilon_px"]
+    rect_settings = rectify.Settings.from_config(ds)
     results = []
     for sample in samples:
-        image = cv2.imread(str(config.DATA_DIR / sample["image"]))
+        image = export_yolo.model_image(sample, cv2.imread(str(config.DATA_DIR / sample["image"])), rect_settings)
         frame_tiles = tiling.tiles(work_area, (sample["width"], sample["height"]),
                                    tiles_cfg["size"], tiles_cfg["overlap"])
         t0 = time.perf_counter()

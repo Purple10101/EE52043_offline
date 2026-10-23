@@ -6,22 +6,32 @@ import pytest
 from shapely.geometry import LineString, Polygon
 
 from robot_offline import clean_synth, config, manifest
-from robot_offline.synth import Settings, _place_bodies, render_frame
+from robot_offline.synth import Settings, _place_bodies, _sample_resistor, render_frame
 
+# A small rectified frame: a 100 mm plate at 5 px/mm with a 10 mm margin, the camera off to the
+# lower left as on the rig.
 SMALL = Settings(
-    width=1600,
-    height=1000,
-    work_area=(200, 150, 1400, 850),
-    px_per_mm=9.8,
+    width=600,
+    height=600,
+    work_area=(50, 50, 550, 550),
+    plate=(50, 50, 550, 550),
+    plate_radius=20.0,
+    px_per_mm=5.0,
+    camera=(-425.0, 375.0),
+    camera_height=1000.0,
     bodies_per_frame=(6, 10),
     touching_fraction=0.4,
     overlap_fraction=0.3,
+    cluster_fraction=0.0,
     min_gap_mm=5,
     lead_length_mm=(10, 20),
-    bent_lead_fraction=0.3,
-    max_bend_deg=20,
+    lead_curl_deg=12,
+    lead_bends=1.0,
+    kink_fraction=0.3,
     empty_fraction=0.0,
     distractors_per_frame=(2, 4),
+    objects_fraction=1.0,
+    objects_per_frame=(1, 3),
 )
 
 
@@ -38,7 +48,7 @@ def _raster(polygon, shape):
 @pytest.mark.parametrize("seed", range(5))
 def test_labels_are_single_disjoint_polygons_inside_the_work_area(seed):
     frame = render_frame(SMALL, np.random.default_rng(seed))
-    assert frame.image.shape == (1000, 1600, 3) and frame.image.dtype == np.uint8
+    assert frame.image.shape == (600, 600, 3) and frame.image.dtype == np.uint8
     assert frame.polygons
     shapes = [Polygon(p) for p in frame.polygons]
     x0, y0, x1, y1 = SMALL.work_area
@@ -121,15 +131,31 @@ def test_background_must_match_frame_size():
 
 
 def test_work_area_must_fit_the_frame():
-    camera = {"camera": {"width": 1000, "height": 800}}
     dataset = {
-        "work_area": {"x0": 100, "y0": 100, "width": 950, "height": 500},
-        "scale": {"px_per_mm": 9.8},
-        "synthetic": {"bodies_per_frame": [1, 2], "touching_fraction": 0, "overlap_fraction": 0,
-                      "min_gap_mm": 5, "empty_fraction": 0, "distractors_per_frame": [0, 0]},
+        "work_area": {"x0": 100, "y0": 100, "width": 1150, "height": 500},
+        "rectify": {"plate_corners_mm": [[50, -80], [50, -180], [-50, -180], [-50, -80]],
+                    "px_per_mm": 10.0, "margin_mm": 10.0, "plate_corner_radius_mm": 4.0},
+        "synthetic": {},
     }
     with pytest.raises(config.ConfigError):
-        Settings.from_config(camera, dataset)
+        Settings.from_config(dataset)
+
+
+def test_settings_from_the_config_draw_the_rectified_frame():
+    st = Settings.from_config(config.load("dataset"))
+    assert (st.width, st.height) == (1200, 1200) and st.plate == (100, 100, 1100, 1100)
+    frame = render_frame(st, np.random.default_rng(3))
+    assert frame.image.shape == (1200, 1200, 3) and frame.polygons
+
+
+def test_bodies_appear_wider_and_shifted_away_from_the_camera():
+    rng = np.random.default_rng(0)
+    res = _sample_resistor(SMALL, rng)
+    res.centre = np.array([450.0, 150.0])
+    away = (res.centre - SMALL.camera) / np.linalg.norm(res.centre - SMALL.camera)
+    res.yaw = np.arctan2(away[1], away[0]) + np.pi / 2   # the axis across the line of sight
+    assert res.seen_radius > res.radius * 1.05
+    assert (res.seen_centre - res.centre) @ away > 0.5 * res.radius * np.linalg.norm(res.lean)
 
 
 def _sample(name, source="synthetic"):

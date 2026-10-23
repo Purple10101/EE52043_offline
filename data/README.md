@@ -7,9 +7,14 @@ the hand-fixed labels).
 
 ```
 data/
-  captures/<session>/      full frames from `capture`, PNG
-    session.toml           date, backdrop, lighting, camera height, notes
-  backgrounds/<session>/   empty-table frames from the same session
+  captures/<session>/      raw full frames from `capture`, PNG: 0001.png and on (the record)
+    session.toml           date, lighting, notes, camera settings, mount, plate corners, and
+                           each frame's kind (resistors, mixed = with non-resistor objects)
+    rectify.json           the session's calibration, from the empty-plate frame
+    rectified/             white-balanced top-down copies, for looking at; regenerate with
+                           `rectify apply`
+  backgrounds/<session>/   empty-plate frames from the same session (0001.png from `capture`)
+  live/                    frames saved from `live` with S
   cutouts/                 resistor body cut-outs: <id>.png (RGBA) and <id>.json (polygon, package)
   synthetic/<name>/        frames from `synth`, JPEG (like the camera's MJPG), plus preview/
                            with the labels outlined; re-running `synth` with the same name

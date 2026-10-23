@@ -2,17 +2,29 @@
 
 [work_area]
 # Box in the frame where resistors lie, the same for every frame. Synthetic resistors (body and
-# leads) are kept wholly inside it, and tiles are cut from it. Full-frame px; must fit the frame.
-x0 = 504                  # placeholder: centred in the 4608 x 2592 frame
-y0 = 396                  # placeholder
-width = 3600              # placeholder: about 367 x 184 mm at 9.8 px/mm
-height = 1800             # placeholder
+# leads) are kept wholly inside it, and tiles are cut from it. Rectified px (see [rectify]): the
+# plate's top surface. Must fit the rectified frame.
+x0 = 100
+y0 = 100
+width = 1000
+height = 1000
 
 [scale]
-px_per_mm = 9.8           # placeholder until calibration, at the table surface
+px_per_mm = 10.0          # rectified images; equal to [rectify] px_per_mm
+
+[rectify]
+# Straight-down view of the pick plate, see rectify.py. The corners of the plate's top surface in
+# the rig scene frame (mm, z up, origin at the robot base), listed in the order they appear in the
+# camera image: top-left, top-right, bottom-right, bottom-left. From the tower the far edge
+# (x = 50) is at the top of the image and the robot-base side (y = -80) on the left. Moving the
+# camera to another side of the plate changes this order.
+plate_corners_mm = [[50.0, -80.0], [50.0, -180.0], [-50.0, -180.0], [-50.0, -80.0]]
+px_per_mm = 10.0          # rectified scale; the camera gives about 8 (far corner) to 13 (near side)
+margin_mm = 10.0          # kept around the plate, for leads past its edge: 1200 x 1200 px
+plate_corner_radius_mm = 4.0  # its rounded corners; everything off the plate is masked before the model sees it
 
 [tiles]
-size = 1024               # px, cut at full resolution (a 1/4 W body is about 24 x 62 px)
+size = 1024               # px; one tile covers the plate (a 1/4 W body is about 65 x 25 px)
 overlap = 128             # px, larger than the longest body so every body is whole in some tile
 min_visible_fraction = 0.6  # a body clipped by a tile edge is kept only if this much is inside
 
@@ -32,17 +44,34 @@ diff_threshold = 25       # Lab distance from the empty-table frame
 min_body_width_mm = 2.4   # opening kernel is half of this, removing leads but not bodies
 
 [synthetic]
-# Settings for `python -m robot_offline.synth`. Lighting, colours and package sizes are constants
-# at the top of src/robot_offline/synth.py.
+# Settings for `python -m robot_offline.synth`, which draws rectified frames ([rectify] geometry).
+# Lighting, colours and package sizes are constants at the top of src/robot_offline/synth.py.
+# Values were matched to the measured look of real rectified frames (2026-10-23_a).
 frames = 100
-bodies_per_frame = [5, 25]  # bodies that do not fit after 30 tries are skipped
-touching_fraction = 0.0   # chance a new body is placed against a lone body, making a pair
+bodies_per_frame = [4, 9]   # bodies that do not fit after 30 tries are skipped
+touching_fraction = 0.08  # chance a new body is placed against a lone body, making a pair
 overlap_fraction = 0.0    # chance it is placed partly over a lone body instead
-min_gap_mm = 15           # body-to-body gap between everything except the two in a pair
-lead_length_mm = [15, 28] # each lead, from the end cap; leads never cross a body
-bent_lead_fraction = 0.1  # share of leads with one bend; the rest are straight
-max_bend_deg = 20         # largest bend angle
+cluster_fraction = 0.12   # chance it is laid parallel beside a placed body, min_gap_mm to 6 mm away
+min_gap_mm = 3.0          # body-to-body gap between everything except the two in a pair
+lead_length_mm = [24, 38] # each lead, from the end cap; leads never cross a body, may cross leads
+lead_curl_deg = 12        # typical sweep along a whole lead; leads lie mostly straight
+lead_bends = 1.0          # hand bends per lead, on average (each 1 to 3 mm long, about 25 degrees)
+kink_fraction = 0.25      # share of leads with a sharp bend 2 to 6 mm from the body
 empty_fraction = 0.05     # frames with no resistors, for false detections
-distractors_per_frame = [0, 8]  # unlabelled lead offcuts and crumbs
-jpeg_quality = [85, 95]   # frames are saved as JPEG, like the camera's MJPG stream
+distractors_per_frame = [0, 4]  # small unlabelled clutter: lead offcuts, crumbs, pencil marks, smudges
+objects_fraction = 0.35   # chance a frame also has screws or wood shavings
+objects_per_frame = [1, 4]
+camera_xy_mm = [-145.0, -145.0]  # lens position over the rig (camera_tower/README.md)
+camera_height_mm = 200.0  # lens above the plate top
+# The camera simulation: frames are drawn render_scale times finer, warped into the camera's raw
+# view, blurred by focus, passed through the colour filter, sensor noise, the camera's sharpening
+# and MJPG, then rectified back. camera_corners_px is where the plate's corners sit in the raw frame
+# (image order, from the 2026-10-23_a calibration; each frame jitters it by about 10 px).
+camera_corners_px = [[1779.1, 562.9], [3061.3, 654.2], [3071.0, 1834.1], [1473.8, 1692.1]]
+render_scale = 1.5
+defocus = 4.0             # blur sigma in raw px per unit of |distance - focus| / distance
+focus_shift_mm = 15.0     # focus distance minus the lens-to-plate-centre distance; real frames are softer near
+mjpg_quality = [80, 92]
+sharpen = [1.8, 2.5]      # the camera's sharpening, unsharp-mask amount (radius 0.8 raw px)
+jpeg_quality = [88, 97]   # frames are saved as JPEG, like the camera's MJPG stream
 seed = 0

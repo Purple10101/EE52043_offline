@@ -1,18 +1,34 @@
-# Overhead camera: Arducam IMX708 USB2 (B030401) through OpenCV DirectShow.
+# Overhead camera: Arducam B030401 (12MP IMX708 USB2, autofocus, HDR) through OpenCV DirectShow,
+# on the camera tower (camera_tower/README.md). Tuned on the rig on 2026-10-23.
 # Keep in step with the robot repo's camera settings: training and live frames must match.
 
 [camera]
-index = 0                 # placeholder: DirectShow device index
+device_name = "Arducam-708-12MP-HDR"  # as Windows lists it
+index = 1                 # DirectShow index on the tuning laptop. It moves when devices change, so
+                          # look for the device that accepts 4608 x 2592 rather than trusting it
 fourcc = "MJPG"
 width = 4608              # native mode; the 4:3 modes look upscaled
 height = 2592
 autofocus = false
-focus = 0                 # placeholder: set once at mounting height (~40 cm)
+focus = 314               # far half of the plate sharpest at 306, near half at 326; best worst case
 auto_exposure = false
-exposure = -6             # placeholder
-auto_white_balance = false
-white_balance = 4600      # placeholder, kelvin
+exposure = -5             # DirectShow log2 s (~1/32 s): plate at ~195/255, nothing clipped; -4 clips most of it
+gain = 0
+auto_white_balance = true # the manual temperature isn't repeatable on this camera (one value gives
+                          # different colours depending on the previous one), so auto, and
+                          # rectify.white_balance neutralises each frame against the plate
+# Image controls at the camera's defaults, set explicitly so another app can't leave them changed.
+brightness = 0
+contrast = 32
+saturation = 64
+sharpness = 3
+gamma = 100
+
+[mount]
+# The camera tower as designed (camera_tower/README.md); copied into each session.toml.
+lens_above_plate_mm = 200
+tilt_from_vertical_deg = 36.1
 
 [capture]
-warmup_frames = 10        # frames discarded after opening, so exposure settles
+warmup_frames = 40        # frames discarded after opening: auto white balance takes about 3 s at ~10 fps
 image_format = "png"      # lossless: MJPG is already compressed, do not recompress

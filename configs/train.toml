@@ -6,7 +6,8 @@ weights = "yolov8m-seg.pt"  # COCO-pretrained start point
 [train]
 imgsz = 1024              # must equal [tiles] size in dataset.toml
 epochs = 100
-batch = 8
+batch = 4                 # 8 needs about 9 GB at 1024 px and spills out of the 6 GB laptop GPU (20x slower)
+workers = 2               # data-loading processes; 8 (the default) ran the 16 GB laptop out of RAM
 device = 0
 patience = 20
 project = "runs"
