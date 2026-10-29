@@ -2,7 +2,7 @@
 
 Most important first.
 
-1. **Green resistor bodies are not detected.** The synthetic packages in `src/robot_offline/synth.py`
+1. **Green resistor bodies are not detected.** The synthetic packages in `src/robot_offline/training/synth.py`
    (`PACKAGES`) are only teal and blue metal film and beige carbon, so `synth_only_v1` has never seen
    a green body. In reference frame `data/reference/2026-10-29/0003.png` (four 10 kΩ) the green-bodied
    resistor was not found at any confidence, even 0.05. To do:

@@ -56,8 +56,8 @@ diff_threshold = 25       # Lab distance from the empty-table frame
 min_body_width_mm = 2.4   # opening kernel is half of this, removing leads but not bodies
 
 [synthetic]
-# Settings for `python -m robot_offline.synth`, which draws rectified frames ([rectify] geometry).
-# Lighting, colours and package sizes are constants at the top of src/robot_offline/synth.py.
+# Settings for `python -m robot_offline.training.synth`, which draws rectified frames ([rectify] geometry).
+# Lighting, colours and package sizes are constants at the top of src/robot_offline/training/synth.py.
 # Values were matched to the measured look of real rectified frames (2026-10-23_a).
 frames = 100
 bodies_per_frame = [4, 9]   # bodies that do not fit after 30 tries are skipped

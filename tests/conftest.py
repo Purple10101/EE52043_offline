@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 import pytest
 
-from robot_offline import rectify
+from robot_offline.pre import rectify
 
 FRAME = (4608, 2592)
 # The tower camera as fitted on a real frame (2026-10-29, after the tower was stiffened): lens about

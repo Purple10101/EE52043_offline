@@ -24,8 +24,8 @@ In each new terminal, run `.venv\Scripts\activate` first.
 **Generate a set.**
 
 ```
-python -m robot_offline.synth --frames 20 --name synth_try   # quick look, about 10 s
-python -m robot_offline.synth                                # full set: 100 frames, about 30 s
+python -m robot_offline.training.synth --frames 20 --name synth_try   # quick look, about 10 s
+python -m robot_offline.training.synth                                # full set: 100 frames, about 30 s
 ```
 
 | Option | Default | Meaning |
@@ -45,8 +45,8 @@ with the leads outside it. Frames are `data/synthetic/<name>/NNNNN.jpg`; labels 
 Sets with other names stay until you delete them:
 
 ```
-python -m robot_offline.clean_synth                   # delete every synthetic set
-python -m robot_offline.clean_synth --name synth_try  # delete one set (repeat --name for more)
+python -m robot_offline.training.clean_synth                   # delete every synthetic set
+python -m robot_offline.training.clean_synth --name synth_try  # delete one set (repeat --name for more)
 ```
 
 This removes the set folders and their manifest samples only; real captures and their labels are
@@ -64,54 +64,67 @@ never touched.
   plate sits in the raw frame, focus, sharpening, MJPG quality) and JPEG quality. The defaults were
   matched to the measured look of real rectified frames.
 - Lighting, plate and surround colours, resistor packages and band colours are constants at the
-  top of `src/robot_offline/synth.py`.
+  top of `src/robot_offline/training/synth.py`.
 
 **Run the tests** with `python -m pytest`.
 
 ## Layout
 
-- `src/robot_offline/` - the package, one module per pipeline step:
-  - `config` - loads the TOML files in `configs/`.
-  - `manifest` - the label store: every frame, its session and its body polygons.
-  - `capture` - captures a session with a live top-down view: SPACE saves the empty plate, then
-    resistor scenes, then scenes with non-resistor objects mixed in, checking the plate each time.
-    `--plan cutouts` captures spread-out objects for the cut-out library instead, outlining each
-    object live so you can see they are apart.
-  - `rectify` - finds the pick plate in a frame and warps frames to a straight-down view of it,
-    with polygons converting both ways; also the lens calibration and plate white balance.
-  - `live` - live straight-down view of the plate from the camera, with a 10 mm grid.
-  - `live_plate` - live check of the plate calibration: the camera's view with the fitted plate
-    drawn on it, next to the rectified plate.
-  - `live_detect` - runs the model live on the camera (3 per second by default) and draws the
-    body outlines, with each body's spine and centroid, on the camera image or the top-down view.
-  - `autolabel` - classical pipeline (empty-table subtraction, opening, contours) for draft labels.
-  - `cutouts` - builds the resistor cut-out library from spread-out scenes.
-  - `synth` - synthetic rectified frames of the plate: resistors, leads and clutter drawn as the
-    tower camera sees them, touching and overlapping cases included, with exact labels.
-  - `clean_synth` - deletes synthetic sets and their manifest samples (all, or `--name <set>`).
-  - `tiling` - frames and polygons to tiles, and tile predictions back to full-frame outlines.
-  - `skeleton` - per predicted outline: its centroid, its thinned skeleton, and its spine (the
-    centre line from end to end, for sampling the bands along), with length, width and yaw.
-  - `export_yolo` - manifest to a YOLO-seg dataset of tiles plus `dataset.yaml`.
-  - `train` - fine-tunes a COCO-pretrained YOLO-seg model.
-  - `train_synth` - trains on synthetic sets only (one set for training, another for validation),
-    then draws the model's predictions on the real rectified frames for a look.
-  - `evaluate` - scores the model on the real test sessions in mm and degrees.
-  - `visualise` - draws polygons and predictions over frames.
-  - `bands/` - research on reading resistor values from the colour bands (see
-    [docs/classification.md](docs/classification.md)):
-    - `bands.crops` - straightened, white-balanced body crops cut from the raw camera frame at
-      20 px/mm, and the crop dataset in `data/bands/`.
-    - `bands.reference` - captures frames of resistors of one known value
-      (`python -m robot_offline.bands.reference 4k7`) into `data/reference/<date>/`, with the
-      bodies found and a preview of each.
-  - `notebooks/` - experiments; `synth_performance_evaluation.ipynb` trains on the synthetic set
-    and scores a COCO-pretrained YOLOv8m-seg before and after tuning.
+- `src/robot_offline/` - the package, in five parts. Run a module with
+  `python -m robot_offline.<part>.<module>`, e.g. `python -m robot_offline.inf.live_detect`.
+  Nothing outside `training/` imports from it (`tests/test_imports.py` checks).
+  - `config` - loads the TOML files in `configs/`. Shared.
+  - `manifest` - the label store: every frame, its session and its body polygons. Shared.
+  - `pre/` - pre-processing, from the camera to the image the model sees:
+    - `camera` - opens the camera with `configs/camera.toml`; on-screen helpers for the live windows.
+    - `rectify` - finds the pick plate in a frame and warps frames to a straight-down view of it,
+      with polygons converting both ways; also the lens calibration, plate white balance and the
+      model's masked input.
+    - `exposure` - exposure that follows the light, metered on the plate's white top.
+    - `live` - live straight-down view of the plate from the camera, with a 10 mm grid.
+    - `live_plate` - live check of the plate calibration: the camera's view with the fitted plate
+      drawn on it, next to the rectified plate.
+  - `inf/` - inference:
+    - `tiling` - runs the model over overlapping tiles of a frame and merges the predictions back
+      into full-frame outlines.
+    - `live_detect` - runs the model live on the camera (3 per second by default) and draws the
+      body outlines, with each body's skeleton, spine and centroid, on the camera image or the
+      top-down view.
+  - `post/` - post-processing of the detected bodies:
+    - `skeleton` - per predicted outline: its centroid, its thinned skeleton, and its spine (the
+      centre line from end to end, for sampling the bands along), with length, width and yaw.
+    - `bands/` - research on reading resistor values from the colour bands (see
+      [docs/classification.md](docs/classification.md)):
+      - `bands.crops` - straightened, white-balanced body crops cut from the raw camera frame at
+        20 px/mm, and the crop dataset in `data/bands/`.
+      - `bands.reference` - captures frames of resistors of one known value
+        (`python -m robot_offline.post.bands.reference 4k7`) into `data/reference/<date>/`, with
+        the bodies found and a preview of each.
+  - `tools/` - capturing frames and evaluating performance:
+    - `capture` - captures a session with a live top-down view: SPACE saves the empty plate, then
+      resistor scenes, then scenes with non-resistor objects mixed in, checking the plate each
+      time. `--plan cutouts` captures spread-out objects for the cut-out library instead,
+      outlining each object live so you can see they are apart.
+    - `evaluate` - scores the model on the real test sessions in mm and degrees.
+    - `visualise` - draws polygons and predictions over frames.
+  - `training/` - everything that makes the model:
+    - `synth` - synthetic rectified frames of the plate: resistors, leads and clutter drawn as the
+      tower camera sees them, touching and overlapping cases included, with exact labels.
+    - `clean_synth` - deletes synthetic sets and their manifest samples (all, or `--name <set>`).
+    - `autolabel` - classical pipeline (empty-table subtraction, opening, contours) for draft
+      labels.
+    - `cutouts` - builds the resistor cut-out library from spread-out scenes.
+    - `export_yolo` - manifest to a YOLO-seg dataset of tiles plus `dataset.yaml`.
+    - `train` - fine-tunes a COCO-pretrained YOLO-seg model.
+    - `train_synth` - trains on synthetic sets only (one set for training, another for
+      validation), then draws the model's predictions on the real rectified frames for a look.
+    - `notebooks/` - experiments; `synth_performance_evaluation.ipynb` trains on the synthetic set
+      and scores a COCO-pretrained YOLOv8m-seg before and after tuning.
 - `configs/` - camera, dataset and training settings.
 - `data/` - images and labels. Not in git; see [data/README.md](data/README.md).
 - `runs/` - training output. Not in git.
 - `weights/` - downloaded pretrained checkpoints. Not in git.
-- `tests/` - tests for the package.
+- `tests/` - tests for the package, in the same five parts.
 
 ## Setup
 
@@ -138,7 +151,7 @@ and nothing else using it, the whole plate in view, its front face included, and
 **2. Run it** from the repo root with the venv active:
 
 ```
-python -m robot_offline.live_plate
+python -m robot_offline.pre.live_plate
 ```
 
 The camera takes a few seconds to settle. Then the plate is found from scratch (about 1.5 s) and,
@@ -221,7 +234,7 @@ the LFS pointer: run `git lfs pull` again.
 **3. Run it** from the repo root with the venv active:
 
 ```
-python -m robot_offline.live_detect
+python -m robot_offline.inf.live_detect
 ```
 
 The camera takes a few seconds to settle, then the window opens. The plate is outlined in white

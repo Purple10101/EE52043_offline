@@ -22,7 +22,8 @@ The model must see exactly what it was trained on: a raw 4608 x 2592 frame recti
 replaced by the plate's grey. In this repo that is one call:
 
 ```python
-from robot_offline import rectify, tiling
+from robot_offline.inf import tiling
+from robot_offline.pre import rectify
 image = rectify.model_input(raw_frame, calibration)            # rectify, white balance, mask
 tiles = tiling.tiles((100, 100, 1000, 1000), (1200, 1200), 1024, 128)
 polygons, scores = tiling.predict_frame(YOLO("best.pt"), image, tiles, conf=0.5)

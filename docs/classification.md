@@ -17,7 +17,7 @@ reject and retry readings.
 
 ## Where it lives
 
-`robot_offline.bands`, separate from the segmentation pipeline. Its input is a body found by the
+`robot_offline.post.bands`, separate from the segmentation pipeline. Its input is a body found by the
 segmentation model (its polygon in the rectified image) and the raw camera frame. The final reader is
 handed to the robot repo as code, like `rectify` and `tiling`.
 
