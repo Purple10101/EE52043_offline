@@ -19,9 +19,12 @@ Every real frame is converted to a straight-down view of the plate before anythi
 
 1. **Undistort.** Remove lens distortion using the camera's calibration (intrinsics), measured once
    with a checkerboard at the locked focus. Not measured yet; until then frames are not undistorted.
-2. **Warp.** A homography maps the plate surface to a top-down image at a fixed scale. It is
-   measured per session from the plate's four top edges (fitted lines, so its rounded corners don't
-   matter), against the plate's corners in the rig scene frame (`configs/dataset.toml [rectify]`).
+2. **Warp.** A homography maps the plate surface to a top-down image at a fixed scale. It comes
+   from the camera's pose and focal length, fitted per session to the plate as a solid from the rig
+   model (`configs/dataset.toml [rectify]`): its far and side top edges, plus the crosshair at its
+   centre or, if that is covered, the bottom of its 5 mm front face. The near top edge is not used:
+   depending on the light the face below it can look like the top. Per frame only the pose is
+   refitted, with the session's focal length.
 3. **White balance.** The camera's manual white balance isn't repeatable, so it runs on auto and
    each rectified image is scaled so the plate is neutral.
 
@@ -149,4 +152,5 @@ Run on the real test sessions only. Match predictions to labels, then report in 
 - Backdrop colour and lighting: decided in the first camera session.
 - Will resistors be placed touching or overlapping? Decides how much synthetic touching data we need.
 - Reference marks on the plate (corners or rim), so the homography can be re-measured on every frame.
+  Partly answered: the crosshair and the front face's bottom edge serve, with the plate's model.
 - Outlines to the robot repo in full-frame pixels (current contract) or rectified millimetres.

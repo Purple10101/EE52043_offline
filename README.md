@@ -80,20 +80,31 @@ never touched.
   - `rectify` - finds the pick plate in a frame and warps frames to a straight-down view of it,
     with polygons converting both ways; also the lens calibration and plate white balance.
   - `live` - live straight-down view of the plate from the camera, with a 10 mm grid.
+  - `live_plate` - live check of the plate calibration: the camera's view with the fitted plate
+    drawn on it, next to the rectified plate.
   - `live_detect` - runs the model live on the camera (3 per second by default) and draws the
-    body outlines on the camera image or the top-down view.
+    body outlines, with each body's spine and centroid, on the camera image or the top-down view.
   - `autolabel` - classical pipeline (empty-table subtraction, opening, contours) for draft labels.
   - `cutouts` - builds the resistor cut-out library from spread-out scenes.
   - `synth` - synthetic rectified frames of the plate: resistors, leads and clutter drawn as the
     tower camera sees them, touching and overlapping cases included, with exact labels.
   - `clean_synth` - deletes synthetic sets and their manifest samples (all, or `--name <set>`).
   - `tiling` - frames and polygons to tiles, and tile predictions back to full-frame outlines.
+  - `skeleton` - per predicted outline: its centroid, its thinned skeleton, and its spine (the
+    centre line from end to end, for sampling the bands along), with length, width and yaw.
   - `export_yolo` - manifest to a YOLO-seg dataset of tiles plus `dataset.yaml`.
   - `train` - fine-tunes a COCO-pretrained YOLO-seg model.
   - `train_synth` - trains on synthetic sets only (one set for training, another for validation),
     then draws the model's predictions on the real rectified frames for a look.
   - `evaluate` - scores the model on the real test sessions in mm and degrees.
   - `visualise` - draws polygons and predictions over frames.
+  - `bands/` - research on reading resistor values from the colour bands (see
+    [docs/classification.md](docs/classification.md)):
+    - `bands.crops` - straightened, white-balanced body crops cut from the raw camera frame at
+      20 px/mm, and the crop dataset in `data/bands/`.
+    - `bands.reference` - captures frames of resistors of one known value
+      (`python -m robot_offline.bands.reference 4k7`) into `data/reference/<date>/`, with the
+      bodies found and a preview of each.
   - `notebooks/` - experiments; `synth_performance_evaluation.ipynb` trains on the synthetic set
     and scores a COCO-pretrained YOLOv8m-seg before and after tuning.
 - `configs/` - camera, dataset and training settings.
@@ -113,6 +124,138 @@ pip install -e .[dev,notebook]
 
 Install the CUDA build of torch first so ultralytics does not pull in the CPU-only one. Python 3.11+
 (`tomllib`).
+
+## Live rectification on the rig
+
+`live_plate` shows, live, how the plate is found and what the top-down view comes out as. Use it to
+check the rig before capturing or detecting: after moving the tower or the plate, or changing the
+lights. It needs the camera and the rig, but not torch or the model (the
+[quick start](#quick-start-synthetic-data) install is enough).
+
+**1. Set up the rig** as for [live detection](#live-detection-on-the-rig): the camera plugged in
+and nothing else using it, the whole plate in view, its front face included, and steady light.
+
+**2. Run it** from the repo root with the venv active:
+
+```
+python -m robot_offline.live_plate
+```
+
+The camera takes a few seconds to settle. Then the plate is found from scratch (about 1.5 s) and,
+from then on, fitted again to the newest frame over and over in the background (about 0.5 s each),
+so the picture keeps running while it works.
+
+The exposure follows the light: it is metered on the plate's white top (once found; before that on
+the brightest part of the frame) and stepped to keep the plate between grey 165 and 235, about
+where the training frames have it, whatever the room does. Gain is only added once the exposure is
+at its longest (1/16 s: the camera can't expose longer at its frame rate), since gain adds noise.
+From a dark room it takes about 5 s to settle. Settings are in
+`configs/camera.toml [exposure_control]`; `e` switches back to the fixed exposure to compare.
+
+**3. Check it.** On the left, the camera's view of the plate with its model drawn where the fit
+puts it. Each line should sit on the real edge:
+
+- green: the outline of the plate's top;
+- cyan: the bottom edge of its front face;
+- magenta: the crosshair, in its groove.
+
+On the right, the newest frame rectified and white-balanced, with a 10 mm grid: the plate's edges
+should sit on the red outline and the crosshair inside the magenta ring.
+
+The text at the top says:
+
+| Line | Meaning |
+|---|---|
+| `fitted ... ago, in ...` | How fresh the fit is. `NOT FOUND` means the latest frame failed (the reason follows) and the last good fit is shown. |
+| `near side by the ...` | What fixed the plate's near side: the `crosshair`, or the `face bottom` when something covers the crosshair. `checks` are how far the features not used are from the fit, in mm; a few tenths at most. |
+| `found, rms` | For each edge, the share of it found and how far its points are from the fit. Under about 80% (a shadow, a hand, a lead over it) or over about 1 px is worth a look. |
+| `camera ..., plate moved ...` | Where the fit puts the lens (scene mm), its tilt and focal length, and how far the plate's corners have moved in the frame since the first fit. With the tower steady this stays under about a pixel; more means the camera is moving. |
+
+| Key | Action |
+|---|---|
+| `q` / `Esc` | Quit. |
+| `g` | Grid on or off. |
+| `z` | The whole camera frame, or zoomed on the plate. |
+| `l` | Lock the fit (stop refitting), to watch the plate drift against it: a test of the tower's stiffness. |
+| `c` | Start again: find the plate from scratch, focal length included (after moving the tower). |
+| `e` | Exposure following the light, or fixed at `configs/camera.toml`'s (to compare). |
+| `s` | Save the raw frame, the rectified image and the calibration (`_rectify.json`) to `data/live/`. |
+
+**If something is wrong:**
+
+- *"plate not found"* or `NOT FOUND`: keep hands and leads off the plate's edges, and the crosshair or
+  the bottom of its front face in view. A lamp low on one side can hide an edge in shadow.
+- The lines sit off the real edges: press `c` to start again. If they still do, save a frame with
+  `s` and look at the plate settings in `configs/dataset.toml [rectify]` (the plate's model).
+
+## Live detection on the rig
+
+`live_detect` runs the segmentation model on the tower camera and draws each resistor body's outline
+over the live image, with a panel of each body's segmented pixels on the right. It needs the whole
+setup: the full install, the trained model, the camera and the rig.
+
+**1. Install.** Follow [Setup](#setup) (the CUDA torch build matters: about 0.2 s per detection on
+the laptop's GPU against about 1.1 s on the CPU). Then fetch the trained model, which is stored with
+Git LFS:
+
+```
+git lfs install
+git lfs pull
+```
+
+`models/synth_only_v1/best.pt` should now be about 52 MB. If it is a few hundred bytes, it is still
+the LFS pointer: run `git lfs pull` again.
+
+**2. Set up the rig.**
+
+- The Arducam B030401 (IMX708, 12 MP) is in the camera tower and plugged in over USB. Close
+  anything else using it (the Camera app, Teams, OBS). The camera is found by its 4608 × 2592 mode,
+  so its device index does not matter.
+- The 100 × 100 mm pick plate is in place with all of it in view, its front face included. The
+  top-down warp is calibrated from the plate's far and side edges, its centre crosshair and the
+  bottom of its front face (the crosshair can be covered, the face's bottom then stands in), so
+  keep hands, cables and resistor leads off the edges.
+- Lighting is steady (room lights). Focus, exposure and gain are fixed in `configs/camera.toml`
+  and tuned for the tower's 200 mm height: change them only if the tower or camera moves.
+
+**3. Run it** from the repo root with the venv active:
+
+```
+python -m robot_offline.live_detect
+```
+
+The camera takes a few seconds to settle, then the window opens. The plate is outlined in white
+once found, and found again every 5 s in the background, so a nudged camera recovers on its own
+without the picture pausing. The exposure follows the light, as in
+[live rectification](#live-rectification-on-the-rig), and the model is given the plate at the
+brightness it has in training (grey 200) whatever the exposure, so a dim room doesn't weaken its
+detections.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--weights` | `models/synth_only_v1/best.pt` | The model to run, e.g. `runs/<name>/weights/best.pt` after training your own. |
+| `--fps` | `3` | Detections per second. |
+| `--conf` | `0.5` | Confidence threshold. Below about 0.3 the plate's rim starts to show up as false bodies. |
+
+| Key | Action |
+|---|---|
+| `q` / `Esc` | Quit. |
+| `v` | Switch between the camera view and the top-down view. |
+| `m` | Top-down view as the model sees it (outside the plate filled grey). |
+| `+` / `-` | Raise or lower the confidence threshold by 0.05. |
+| `c` | Find the plate again now, from scratch. |
+| `e` | Exposure following the light, or fixed at `configs/camera.toml`'s (to compare). |
+| `s` | Save the shown image to `data/live/detect_<time>.jpg`. |
+
+**If something is wrong:**
+
+- *"plate not found"* in the status line: check that the plate's edges are visible and clear, and
+  that the crosshair or the bottom of the plate's front face is, then press `c`. Uneven light (a
+  lamp low on one side) can hide an edge in shadow.
+- *"no camera accepts 4608 × 2592"*: unplug and replug the camera, and check nothing else has it
+  open.
+- Outlines lag or the rate is well under `--fps`: torch is probably the CPU build. Check with
+  `python -c "import torch; print(torch.cuda.is_available())"`, which should print `True`.
 
 ## Workflow
 

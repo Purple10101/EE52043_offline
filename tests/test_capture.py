@@ -18,12 +18,6 @@ def _meta(session):
         return tomllib.load(f)
 
 
-def _moved(frame, dx, dy):
-    """The frame as if the camera had moved: shifted by (dx, dy) px."""
-    m = np.float32([[1, 0, dx], [0, 1, dy]])
-    return cv2.warpAffine(frame, m, (frame.shape[1], frame.shape[0]), borderMode=cv2.BORDER_REPLICATE)
-
-
 def test_empty_plate_saves_the_background_and_calibration(session, plate_frame):
     cal, _ = rectify.calibrate(plate_frame)
     session.save_empty(plate_frame, cal)
@@ -51,15 +45,15 @@ def test_scenes_are_numbered_recorded_and_undone(session, plate_frame):
     assert len(_meta(session)["frames"]) == 1
 
 
-def test_a_frame_from_a_moved_camera_gets_its_own_calibration(session, plate_frame, plate_corners):
+def test_a_frame_from_a_moved_camera_gets_its_own_calibration(session, plate_frame, moved_plate):
     cal, _ = rectify.calibrate(plate_frame)
     session.save_empty(plate_frame, cal)
-    moved = _moved(plate_frame, 18, -11)
+    moved, truth = moved_plate(1.5, -1.0)
     frame_cal, _ = rectify.recalibrate(moved, session.last_cal)
-    assert np.abs(frame_cal.corners_px - (plate_corners + (18, -11))).max() < 1.0
+    assert np.abs(frame_cal.corners_px - truth).max() < 1.5
     session.save_scene(moved, "resistors", frame_cal, True)
     entry = _meta(session)["frames"][0]
-    assert entry["plate_shift_px"] == pytest.approx(18, abs=1)
+    assert entry["plate_shift_px"] == pytest.approx(np.abs(truth - cal.corners_px).max(), abs=1.5)
     assert np.allclose(session.frame_cal(entry).corners_px, frame_cal.corners_px, atol=0.01)
     # The rectified copy matches the unmoved frame's, because it used the frame's own corners.
     saved = cv2.imread(str(session.dir / "rectified" / "0001.png")).astype(float)
@@ -90,12 +84,49 @@ def test_objects_are_outlined_separately_and_edge_ones_flagged():
     assert capture.outline_objects(together, empty, st, threshold=25)[1] == 3
 
 
-def test_a_session_continues_where_it_stopped(session, plate_frame):
+@pytest.mark.parametrize("text, ohms", [("470", 470), ("47R", 47), ("10R5", 10.5), ("4k7", 4700),
+                                         ("4.7k", 4700), ("1K5", 1500), ("10k", 10_000), ("1M", 1e6),
+                                         (" 220 ohm", 220)])
+def test_values_are_read_as_written_on_bags_and_schematics(text, ohms):
+    assert capture.parse_ohms(text) == pytest.approx(ohms)
+
+
+@pytest.mark.parametrize("text", ["", "k", "4.7k5", "47x", "1..2"])
+def test_nonsense_values_are_refused(text):
+    with pytest.raises(ValueError):
+        capture.parse_ohms(text)
+
+
+def test_reference_frames_record_their_value(session, plate_frame):
     cal, _ = rectify.calibrate(plate_frame)
     session.save_empty(plate_frame, cal)
-    moved = _moved(plate_frame, 10, 5)
+    session.save_scene(plate_frame, "reference", cal, True, {"value_ohm": 4700.0})
+    assert _meta(session)["frames"][0]["value_ohm"] == 4700.0
+    assert capture.format_ohms(4700.0) == "4.7k" and capture.format_ohms(47.0) == "47R"
+
+
+def test_reference_frames_are_saved_with_value_calibration_and_preview(tmp_path, plate_frame):
+    from robot_offline.bands import reference
+
+    cal, sides = rectify.calibrate(plate_frame)
+    rect, _ = rectify.white_balance(rectify.rectify(plate_frame, cal), cal.settings)
+    body = np.array([[500, 500], [570, 500], [570, 525], [500, 525]], float)
+    reference.save(tmp_path, plate_frame, cal, 1000, rect, [body], [0.9], sides)
+    entry = reference.save(tmp_path, plate_frame, cal, 3000, rect, [], [], sides)
+    assert entry["file"] == "0002.png" and entry["bodies"] == 0
+    for name in ["0001.png", "0001_rectify.json", "previews/0001.jpg", "previews/0002.jpg"]:
+        assert (tmp_path / name).exists()
+    index = reference.load_index(tmp_path)
+    assert [e["value_ohm"] for e in index] == [1000.0, 3000.0]
+    assert np.allclose(index[0]["polygons_rect"], body)
+
+
+def test_a_session_continues_where_it_stopped(session, plate_frame, moved_plate):
+    cal, _ = rectify.calibrate(plate_frame)
+    session.save_empty(plate_frame, cal)
+    moved, truth = moved_plate(0.8, 0.4)
     session.save_scene(moved, "resistors", rectify.recalibrate(moved, cal)[0], True)
     again = capture.Session("2026-10-23_a", "", "", config.load("camera"))
     assert again.cal is not None and again.count("resistors") == 1 and again.lighting == "room lights"
-    assert np.abs(again.last_cal.corners_px - (cal.corners_px + (10, 5))).max() < 1.0
+    assert np.abs(again.last_cal.corners_px - truth).max() < 1.5
     assert again.save_scene(plate_frame, "resistors", cal, True) == "0002.png"

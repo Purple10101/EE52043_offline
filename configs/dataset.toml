@@ -21,7 +21,19 @@ px_per_mm = 10.0          # rectified images; equal to [rectify] px_per_mm
 plate_corners_mm = [[50.0, -80.0], [50.0, -180.0], [-50.0, -180.0], [-50.0, -80.0]]
 px_per_mm = 10.0          # rectified scale; the camera gives about 8 (far corner) to 13 (near side)
 margin_mm = 10.0          # kept around the plate, for leads past its edge: 1200 x 1200 px
-plate_corner_radius_mm = 4.0  # its rounded corners; everything off the plate is masked before the model sees it
+# The plate as a solid, from the rig model (../arm_and_rig_scene/EduSCARA_resistorrig.obj, body Body1:1).
+# The camera is found by fitting where it must be for this solid to look as it does (rectify.py).
+plate_corner_radius_mm = 5.0  # its rounded corners; everything off the plate is masked before the model sees it
+plate_top_z_mm = -22.0    # height of its top
+plate_face_mm = 5.0       # its front face: the slab's underside is this far below the top
+# The crosshair groove in the top (1 mm wide, 3 mm deep): (0, -130) in the CAD, measured on the
+# printed plate on 2026-10-29 against its edges and face (16 frames, two lightings, spread 0.02 mm).
+crosshair_mm = [-0.48, -130.37]
+crosshair_arm_mm = 5.0    # each arm's length
+# Where the fit starts: the lens by design (camera_tower/README.md) and its focal length in raw px at
+# the camera.toml focus (fitted on 2026-10-29: 3597 px).
+camera_mm = [-145.0, -145.0, 178.0]
+focal_px = 3600.0
 
 [tiles]
 size = 1024               # px; one tile covers the plate (a 1/4 W body is about 65 x 25 px)

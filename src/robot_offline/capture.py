@@ -14,6 +14,10 @@ captures. A session goes:
      the cut-out library. The live view outlines every object it finds against the empty plate,
      each in its own colour: two objects inside one outline are touching, and an object outlined in
      red is too near the plate's edge. Move them until each has its own outline.
+   - `--plan reference`: known values for the band reader. Press V and type the value (470, 47R,
+     10R5, 4k7, 1.5k; Enter), spread out resistors of that value only, and capture a few frames,
+     moving, turning and rolling them in between; then V for the next value. Every frame records
+     its value_ohm, so every body in it is labelled. Objects are outlined live as for cut-outs.
    `--count` and `--mixed` change the number of frames in the plan's first and second part.
 
 Before saving a scene the plate is found again, near where it was last seen, and the frame keeps its
@@ -27,15 +31,18 @@ same --session continues it.
 
     python -m robot_offline.capture                         # 15 + 5 frames, new session for today
     python -m robot_offline.capture --plan cutouts          # 12 + 6 spread-out frames for cut-outs
+    python -m robot_offline.capture --plan reference        # known values, typed in with V
     python -m robot_offline.capture --count 15 --mixed 5 --lighting "room lights" --notes "..."
     python -m robot_offline.capture --session 2026-10-23_a  # continue a session
 
 Keys:  SPACE capture    F capture even if the plate isn't found    U undo the last scene frame
+       V type the value (reference plan)
        E redo the empty plate (before any scene frame)    R raw / top-down    G grid    Q / Esc quit
 """
 
 import argparse
 import json
+import re
 import tomllib
 from datetime import datetime
 from pathlib import Path
@@ -50,6 +57,7 @@ CAMERA_MOVED_PX = 3.0       # plate corner movement since the last frame that is
 RETRY_FRAMES = 20           # while the plate isn't found for the live view, look again this often
 WINDOW = "robot_offline capture"
 RAW_SCALE = 0.25
+VALUE_RANGE_OHM = (10.0, 10_000.0)  # the sorter's range; reference values outside it get a warning
 EDGE_MARGIN_MM = 3.0        # cut-out objects closer than this to the plate's edge are outlined in red
 MIN_OBJECT_PX = 40          # smaller differences from the empty plate are dust or noise, not objects
 OUTLINE_BGR = ((255, 140, 0), (0, 200, 0), (200, 0, 200), (0, 170, 255), (255, 0, 120),
@@ -61,6 +69,8 @@ PLANS = {
                ("mixed", 5, "Arrange resistors with some non-resistor objects mixed in")),
     # With only a few resistors, each frame should show them somewhere new: moved, turned, some
     # rolled over to show the other side of the bands, some leads re-bent.
+    # Known values for the band reader: every resistor on the plate has the value typed in with V.
+    "reference": (("reference", 500, "Spread out resistors of this value only; move, turn and roll them each frame"),),
     "cutouts": (("cutout_resistors", 12, "Move every resistor somewhere new, turned; roll some, re-bend some leads; keep them apart"),
                 ("cutout_objects", 6, "Spread screws, shavings and other objects out, apart, away from the edges")),
 }
@@ -131,7 +141,7 @@ def find_plate(frame, settings):
     except rectify.PlateNotFound as e:
         return None, f"plate not found: {e}"
     worst = min(share for share, _ in sides)
-    return cal, f"plate found ({worst:.0%} of edge points on the worst edge)"
+    return cal, f"plate found (near side by the {cal.fit['near_side_by']}; {worst:.0%} of the worst edge found)"
 
 
 def view_of(frame, cal, raw, grid):
@@ -144,6 +154,26 @@ def view_of(frame, cal, raw, grid):
         return view
     rect, _ = rectify.white_balance(rectify.rectify(frame, cal), cal.settings)
     return rectify.draw_grid(rect, cal.settings) if grid else rect
+
+
+def parse_ohms(text):
+    """A resistance typed as on a schematic or a bag: 470, 47R, 10R5, 4k7, 4.7k, 1M. Raises ValueError."""
+    t = text.strip().lower().replace("ohms", "").replace("ohm", "").replace(" ", "")
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)([rkm]?)(\d*)", t)
+    if not m or (m.group(3) and ("." in m.group(1) or not m.group(2))):
+        raise ValueError(f"not a resistance: {text!r}")
+    number, unit, fraction = m.groups()
+    value = float(number + ("." + fraction if fraction else ""))
+    return value * {"": 1.0, "r": 1.0, "k": 1e3, "m": 1e6}[unit]
+
+
+def format_ohms(value):
+    """470R, 4k7-style text for the screen (OpenCV's font has no Ω)."""
+    if value >= 1e6:
+        return f"{value / 1e6:g}M"
+    if value >= 1e3:
+        return f"{value / 1e3:g}k"
+    return f"{value:g}R"
 
 
 def outline_objects(rect, empty, settings, threshold):
@@ -242,9 +272,9 @@ class Session:
         self.cal = cal
         self.write()
 
-    def save_scene(self, frame, kind, cal, found):
+    def save_scene(self, frame, kind, cal, found, extra=None):
         """Saves a scene frame with its own calibration. found: whether the plate was found in this
-        frame (else cal is where it was last seen)."""
+        frame (else cal is where it was last seen). extra: more fields for its session.toml entry."""
         (self.dir / "rectified").mkdir(parents=True, exist_ok=True)
         number = max([int(Path(f["file"]).stem) for f in self.frames], default=0) + 1
         name = f"{number:04d}.png"
@@ -254,7 +284,7 @@ class Session:
         self.frames.append({"file": name, "kind": kind, "captured": datetime.now().isoformat(timespec="seconds"),
                             "plate_found": found,
                             "plate_shift_px": round(float(np.abs(cal.corners_px - self.cal.corners_px).max()), 2),
-                            "plate_corners_px": np.round(cal.corners_px, 2).tolist()})
+                            "plate_corners_px": np.round(cal.corners_px, 2).tolist(), **(extra or {})})
         self.write()
         return name
 
@@ -308,7 +338,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Capture a session of frames with a live view; SPACE captures.")
     parser.add_argument("--session", help="session name; default today's date and the next free letter")
     parser.add_argument("--plan", choices=sorted(PLANS), default="scenes",
-                        help="scenes: realistic arrangements (15 + 5); cutouts: spread out for cut-outs (12 + 6)")
+                        help="scenes: realistic arrangements (15 + 5); cutouts: spread out for cut-outs (12 + 6); "
+                             "reference: known values, one per frame, typed in with V")
     parser.add_argument("--count", type=int, help="frames in the plan's first part")
     parser.add_argument("--mixed", type=int, help="frames in the plan's second part")
     parser.add_argument("--lighting", default="", help="lighting, for session.toml")
@@ -327,6 +358,10 @@ def main(argv=None):
     settings = rectify.Settings.from_config()
     threshold = config.load("dataset")["autolabel"]["diff_threshold"]
     empty = None                        # the rectified empty plate, for outlining cut-out objects
+    outlines = args.plan in ("cutouts", "reference")
+    # Reference plan: the value of every resistor on the plate, typed with V; continues the last one.
+    value = next((f["value_ohm"] for f in reversed(session.frames) if "value_ohm" in f), None)
+    typing = None                       # the value being typed, or None
     print(f"Session {session.name}: {session.dir}")
     print("Opening the camera (a few seconds while exposure and white balance settle)...")
     cap = open_camera(camera)
@@ -342,7 +377,7 @@ def main(argv=None):
         n += 1
         if view_cal is None and n % RETRY_FRAMES == 1:
             view_cal, _ = find_plate(frame, settings)
-        if args.plan == "cutouts" and empty is None and session.cal is not None and session.background.exists():
+        if outlines and empty is None and session.cal is not None and session.background.exists():
             empty, _ = rectify.white_balance(rectify.rectify(cv2.imread(str(session.background)), session.cal),
                                              session.cal.settings)
 
@@ -351,6 +386,18 @@ def main(argv=None):
             steps = ["EMPTY PLATE", "Clear the plate. Keep hands and the arm out of view, then press SPACE."]
         elif phase is None:
             steps = [f"DONE: all {sum(t for _, t, _ in phases)} frames captured", "Press Q to finish."]
+        elif args.plan == "reference":
+            same = sum(f.get("value_ohm") == value for f in session.frames) if value is not None else 0
+            values = len({f["value_ohm"] for f in session.frames if "value_ohm" in f})
+            if typing is not None:
+                steps = [f"TYPE THE VALUE: {typing}_", "e.g. 470, 47R, 10R5, 4k7, 1.5k; Enter to set, Esc to cancel"]
+            elif value is None:
+                steps = ["REFERENCE: press V and type the value of the resistors you'll put on the plate",
+                         f"{len(session.frames)} frames of {values} values so far"]
+            else:
+                steps = [f"VALUE {format_ohms(value)}: {same} frames of it so far ({values} values, "
+                         f"{len(session.frames)} frames in all)",
+                         f"{phase[2]}, move your hand away, then SPACE. V for the next value."]
         else:
             kind, total, prompt = phase
             steps = [f"{kind.upper()}: frame {session.count(kind) + 1} of {total}",
@@ -363,14 +410,32 @@ def main(argv=None):
                          + ": one outline per object")
         else:
             view = view_of(frame, view_cal, raw, grid)
-        label(view, [f"Session {session.name}"] + steps + [message,
-                     "SPACE capture  F force  U undo  E redo empty  R raw  G grid  Q quit"])
+        keys = "SPACE capture  F force  U undo  E redo empty  R raw  G grid  Q quit"
+        label(view, [f"Session {session.name}"] + steps + [message, ("V value  " if args.plan == "reference" else "") + keys])
         shown = show(view, shown)
 
         key = cv2.waitKey(1) & 0xFF
+        if typing is not None:                  # typing a value: these keys are text, not commands
+            if key in (13, 10):
+                try:
+                    value, typing = parse_ohms(typing), None
+                    lo, hi = VALUE_RANGE_OHM
+                    message = f"value set to {format_ohms(value)}" + (
+                        "" if lo <= value <= hi else f" (outside the sorter's {format_ohms(lo)} to {format_ohms(hi)})")
+                except ValueError as e:
+                    message, typing = f"{e}; press V to try again", None
+            elif key == 27:
+                typing, message = None, "value unchanged"
+            elif key == 8:
+                typing = typing[:-1]
+            elif key != 255 and chr(key).lower() in "0123456789.rkm":
+                typing += chr(key).lower()
+            continue
         if key in (ord("q"), 27) or cv2.getWindowProperty(WINDOW, cv2.WND_PROP_VISIBLE) < 1:
             break
-        if key == ord("g"):
+        if key == ord("v") and args.plan == "reference":
+            typing = ""
+        elif key == ord("g"):
             grid = not grid
         elif key == ord("r"):
             raw = not raw
@@ -394,6 +459,8 @@ def main(argv=None):
                     message = f"saved the empty plate and the calibration ({status})"
             elif phase is None:
                 message = "all frames captured: press Q to finish"
+            elif args.plan == "reference" and value is None:
+                message = "NOT SAVED: press V and type the resistors' value first"
             else:
                 last = session.last_cal
                 try:
@@ -404,10 +471,11 @@ def main(argv=None):
                 if not found and key != ord("f"):
                     message = "NOT SAVED: an edge of the plate is hidden. Move hands and the arm away (F saves anyway)"
                 else:
-                    name = session.save_scene(frame, phase[0], cal, found)
+                    extra = {"value_ohm": value} if args.plan == "reference" else None
+                    name = session.save_scene(frame, phase[0], cal, found, extra)
                     view_cal = cal
                     moved = float(np.abs(cal.corners_px - last.corners_px).max())
-                    message = f"saved {name} ({phase[0]})"
+                    message = f"saved {name} ({phase[0]}" + (f", {format_ohms(value)})" if extra else ")")
                     if not found:
                         message += ", plate not found: used the last frame's corners"
                     elif moved > CAMERA_MOVED_PX:

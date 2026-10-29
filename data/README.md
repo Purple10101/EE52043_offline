@@ -15,6 +15,10 @@ data/
                            `rectify apply`
   backgrounds/<session>/   empty-plate frames from the same session (0001.png from `capture`)
   live/                    frames saved from `live` with S
+  reference/<date>/        known-value frames from `bands.reference`: NNNN.png (raw), NNNN_rectify.json,
+    previews/NNNN.jpg      bodies found outlined, beside their cut-outs
+    reference.json         each frame's value_ohm and the bodies found (polygons, rectified px)
+  bands/                   straightened body crops from `bands.crops`, for the band reader
   cutouts/                 resistor body cut-outs: <id>.png (RGBA) and <id>.json (polygon, package)
   synthetic/<name>/        frames from `synth`, JPEG (like the camera's MJPG), plus preview/
                            with the labels outlined; re-running `synth` with the same name

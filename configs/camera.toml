@@ -24,6 +24,20 @@ saturation = 64
 sharpness = 3
 gamma = 100
 
+[exposure_control]
+# Exposure that follows the light, metered on the plate's white top (exposure.py), in the live
+# tools. exposure and gain above are where it starts.
+low = 165                 # the plate's level (grey) is kept between these: training frames have it at ~200
+high = 235
+max_clipped = 0.01        # share of the plate's brighter half at 250 or more that counts as too bright
+exposure_step = 1         # log2 s per step: 1 doubles or halves the light (the camera takes whole steps only)
+min_exposure = -11        # ~1/2000 s
+max_exposure = -4         # 1/16 s: the longest that has any effect, the frames coming at ~11 fps (measured 2026-10-29)
+gain_step = 8             # gain is only added at max_exposure, this much per step
+max_gain = 100            # the camera's most; 0 to 100 brings the plate from ~93 to ~240 (about 8x the light),
+                          # image noise from 3 to 5.5 grey, and the plate is still found
+settle_frames = 3         # frames the camera takes to apply a change
+
 [mount]
 # The camera tower as designed (camera_tower/README.md); copied into each session.toml.
 lens_above_plate_mm = 200
