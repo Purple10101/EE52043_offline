@@ -41,13 +41,19 @@ def settings(augment=True, **overrides):
     return kw
 
 
-def train(data_yaml, weights=None, augment=True, **overrides):
-    """Trains from weights (default [model] weights in configs/train.toml). Returns the run folder."""
+def train(data_yaml, weights=None, augment=True, grey=False, **overrides):
+    """Trains from weights (default [model] weights in configs/train.toml). Returns the run folder.
+
+    grey: the data is greyscale (export with grey=True): hue and saturation changes are switched off,
+    and handoff.json records "input": "grey" so every tool feeds the model grey (tiling.wants_grey).
+    """
     from ultralytics import YOLO
 
     weights = weights or config.load("train")["model"]["weights"]
     if not Path(weights).exists():
         weights = pretrained(weights)
+    if grey:
+        overrides = {"hsv_h": 0.0, "hsv_s": 0.0, **overrides}
     kw = settings(augment, **overrides)
     model = YOLO(str(weights))
     model.train(data=str(data_yaml), exist_ok=True, **kw)
@@ -62,6 +68,7 @@ def train(data_yaml, weights=None, augment=True, **overrides):
         "rules_version": ds["labels"]["rules_version"],
         "classes": list(ds["labels"]["classes"]),
         "train_args": {k: v for k, v in kw.items() if k != "project"},
+        **({"input": "grey"} if grey else {}),
     }, indent=2))
     return run_dir
 
@@ -74,9 +81,10 @@ def main(argv=None):
     parser.add_argument("--data", type=Path, default=config.DATA_DIR / "yolo" / "dataset.yaml")
     parser.add_argument("--name", help="run name; default [train] name in configs/train.toml")
     parser.add_argument("--epochs", type=int)
+    parser.add_argument("--grey", action="store_true", help="the data was exported grey (export_yolo --grey)")
     args = parser.parse_args(argv)
     overrides = {k: v for k, v in (("name", args.name), ("epochs", args.epochs)) if v is not None}
-    print(f"Run folder: {train(args.data, **overrides)}")
+    print(f"Run folder: {train(args.data, grey=args.grey, **overrides)}")
 
 
 if __name__ == "__main__":

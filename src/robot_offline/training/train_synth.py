@@ -27,7 +27,7 @@ from robot_offline.pre import rectify
 from robot_offline.training import export_yolo, train
 
 
-def preview(weights, out_dir, folders, conf=0.25):
+def preview(weights, out_dir, folders, conf=0.25, grey=False):
     """Draws the model's predictions on rectified real frames; writes each frame and a sheet."""
     from ultralytics import YOLO
 
@@ -40,9 +40,10 @@ def preview(weights, out_dir, folders, conf=0.25):
     thumbs = []
     for folder in folders:
         for p in sorted(folder.glob("*.png")):
-            img = rectify.mask_outside_plate(cv2.imread(str(p)), st)
+            img = rectify.model_image({"image": str(p), "space": "rectified", "source": "real"},
+                                      cv2.imread(str(p)), st)
             frame_tiles = tiling.tiles(work_area, (img.shape[1], img.shape[0]), tiles_cfg["size"], tiles_cfg["overlap"])
-            polygons, scores = tiling.predict_frame(model, img, frame_tiles, conf=conf)
+            polygons, scores = tiling.predict_frame(model, img, frame_tiles, conf=conf, grey=grey)
             for poly, score in zip(polygons, scores):
                 pts = np.round(poly).astype(np.int32)
                 cv2.polylines(img, [pts], True, (0, 0, 255), 2, cv2.LINE_AA)
@@ -70,6 +71,9 @@ def main(argv=None):
     parser.add_argument("--epochs", type=int, default=60)
     parser.add_argument("--patience", type=int, default=15, help="stop after this many epochs without improvement")
     parser.add_argument("--no-preview", action="store_true", help="skip drawing predictions on real frames")
+    parser.add_argument("--grey", action="store_true",
+                        help="train on greyscale tiles (as seg_grey_v2); handoff.json records \"input\": \"grey\"")
+    parser.add_argument("--weights", help="start from these weights instead of [model] weights in configs/train.toml")
     args = parser.parse_args(argv)
 
     ds = config.load("dataset")
@@ -81,10 +85,12 @@ def main(argv=None):
 
     print("Exporting plate-masked tiles...", flush=True)
     splits = {**{n: "train" for n in args.train}, **{n: "val" for n in args.val}}
-    yaml_path = export_yolo.export_from_config(samples, splits, config.DATA_DIR / "yolo_synth")
+    out = config.DATA_DIR / ("yolo_synth_grey" if args.grey else "yolo_synth")
+    yaml_path = export_yolo.export_from_config(samples, splits, out, grey=args.grey)
 
     print("Training...", flush=True)
-    run_dir = train.train(yaml_path, name=args.name, epochs=args.epochs, patience=args.patience)
+    run_dir = train.train(yaml_path, weights=args.weights, grey=args.grey, name=args.name, epochs=args.epochs,
+                          patience=args.patience)
     best = run_dir / "weights" / "best.pt"
     print(f"Run folder: {run_dir}\nBest weights: {best}", flush=True)
 
@@ -92,7 +98,7 @@ def main(argv=None):
         folders = sorted(p for p in (config.DATA_DIR / "captures").glob("*/rectified") if p.is_dir())
         if folders:
             print("Predictions on the real frames:", flush=True)
-            preview(best, run_dir / "real_preview", folders)
+            preview(best, run_dir / "real_preview", folders, grey=args.grey)
             print(f"See {run_dir / 'real_preview' / 'sheet.jpg'}")
 
 

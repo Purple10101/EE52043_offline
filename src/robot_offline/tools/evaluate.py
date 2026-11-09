@@ -172,6 +172,38 @@ def evaluate_samples(model, samples, conf=0.25, **predict_kwargs):
     return results
 
 
+def by_group(samples, results):
+    """{group: (found, labelled)} over labelled bodies with a "group" in the manifest (body colour or
+    size, say), so a kind of body that is always missed is not hidden by the overall recall."""
+    counts = {}
+    for sample, result in zip(samples, results):
+        found = {m["label_index"] for m in result["matched"]}
+        for i, instance in enumerate(sample["instances"]):
+            if "group" in instance:
+                hit, total = counts.get(instance["group"], (0, 0))
+                counts[instance["group"]] = (hit + (i in found), total + 1)
+    return dict(sorted(counts.items()))
+
+
+def by_kind(samples, results):
+    """{kind: (found, labelled)} over every labelled object; an instance without a kind is a resistor."""
+    counts = {}
+    for sample, result in zip(samples, results):
+        found = {m["label_index"] for m in result["matched"]}
+        for i, instance in enumerate(sample["instances"]):
+            kind = instance.get("kind", "resistor")
+            hit, total = counts.get(kind, (0, 0))
+            counts[kind] = (hit + (i in found), total + 1)
+    return dict(sorted(counts.items()))
+
+
+def false_detections_where_complete(samples, results):
+    """(false detections, frames) over the frames whose every object is outlined (labelled "objects",
+    docs/labelling.md); elsewhere an unlabelled screw would count as a false detection."""
+    pairs = [(s, r) for s, r in zip(samples, results) if s.get("labelled", "resistors") == "objects"]
+    return sum(r["false_detections"] for _, r in pairs), len(pairs)
+
+
 def main(argv=None):
     from ultralytics import YOLO
 
@@ -192,10 +224,16 @@ def main(argv=None):
                if s["session"] in args.sessions]
     if not samples:
         parser.error(f"no frames in the manifest for sessions {args.sessions}")
-    results = evaluate_samples(YOLO(str(args.weights)), samples, conf=args.conf)
+    results = evaluate_samples(YOLO(str(args.weights)), samples, conf=args.conf, grey=tiling.wants_grey(args.weights))
     for key, value in summarise(results).items():
         print(f"{key:>24}  {value:.3f}" if isinstance(value, float) else f"{key:>24}  {value}")
     print(f"{'seconds_per_frame_p50':>24}  {np.median([r['seconds'] for r in results]):.3f}")
+    for group, (found, total) in by_group(samples, results).items():
+        print(f"{'found ' + group:>24}  {found} of {total}")
+    for kind, (found, total) in by_kind(samples, results).items():
+        print(f"{'found kind ' + kind:>24}  {found} of {total}")
+    false, frames = false_detections_where_complete(samples, results)
+    print(f"{'false det. (complete)':>24}  {false} on {frames} frames with every object outlined")
 
 
 if __name__ == "__main__":

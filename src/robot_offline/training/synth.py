@@ -8,7 +8,8 @@ after `rectify apply`. Real frames are never used here; their look was measured 
   marks and smudges, and around it the robot base (blue), the table (wood) and the plate's own
   front face and legs on the near side, each side's surround chosen at random.
 - Resistors: mostly turquoise metal film, some blue metal film and beige carbon, with colour bands;
-  long tinned leads that curve gently, sometimes kink near the body, and may cross each other.
+  long tinned leads that curve gently, sometimes kink near the body, and may cross each other. A
+  share of bodies take any paint and any size instead, so neither identifies a resistor.
 - The camera's view: the camera looks at the plate from one side ([synthetic] camera_xy_mm and
   camera_height_mm), so a body, standing a radius or so off the plate, appears wider and shifted
   away from the camera. Bodies are drawn and labelled as they appear.
@@ -16,6 +17,8 @@ after `rectify apply`. Real frames are never used here; their look was measured 
   sometimes with no resistors at all.
 - The camera: faint soft shadows, focus blur that grows towards the far side of the plate, low
   noise, saved as JPEG.
+- The room: in a share of frames, hard cast shadows from one or two lights, broad shade as from
+  the arm, a tint that changes across the plate, and an under- or over-exposed camera.
 
 Resistors, leads included, lie wholly inside the work area (the plate), every body keeps a minimum
 gap from the others, and no lead or clutter touches a body. Optionally a share of bodies touch a
@@ -36,6 +39,7 @@ other sets stay until removed with `python -m robot_offline.training.clean_synth
 """
 
 import argparse
+import colorsys
 import math
 import re
 import shutil
@@ -50,6 +54,7 @@ from shapely.geometry import LineString, Polygon, box
 from shapely.ops import unary_union
 
 from robot_offline import config, manifest
+from robot_offline.post.bands import value
 from robot_offline.pre import rectify
 from robot_offline.tools import visualise
 
@@ -88,20 +93,21 @@ PACKAGES = (
 PACKAGE_P = np.array([p.weight for p in PACKAGES]) / sum(p.weight for p in PACKAGES)
 
 DIGITS = ("black", "brown", "red", "orange", "yellow", "green", "blue", "violet", "grey", "white")
-BAND_RGB = {
-    name: np.array(rgb, np.float32) / 255
-    for name, rgb in {
-        "black": (48, 44, 42), "brown": (138, 82, 46), "red": (208, 48, 54),
-        "orange": (232, 128, 46), "yellow": (238, 212, 72), "green": (62, 146, 82),
-        "blue": (62, 98, 196), "violet": (142, 92, 186), "grey": (140, 140, 140),
-        "white": (226, 226, 222), "gold": (188, 158, 86), "silver": (190, 190, 195),
-    }.items()
-}
-# Band centres as a fraction of the body length from the band-1 end, and band width.
-BAND_POSITIONS = {4: (0.27, 0.40, 0.53, 0.75), 5: (0.24, 0.36, 0.48, 0.60, 0.77)}
-BAND_WIDTH = 0.052
+# Band paints as measured on real parts, in frame colour (the plate at PLATE_LEVEL, not 1).
+PLATE_LEVEL = 0.78
+BAND_RGB = {name: value.paint_rgb(name) * PLATE_LEVEL for name in value.PAINT_LAB}
+# Band centres as a fraction of the body length from the band-1 end, and band width: measured on real
+# bodies (2026-11-06), about 0.65 mm wide on a 1/4 W body.
+BAND_POSITIONS = {4: (0.24, 0.45, 0.69, 0.92), 5: (0.27, 0.43, 0.58, 0.73, 0.89)}
+BAND_WIDTH = 0.095
+BAND_BODY_SHOWS = (0.4, 0.95)  # how much the body under a band darkens and colours it; the paint is thin
 E24 = (10, 11, 12, 13, 15, 16, 18, 20, 22, 24, 27, 30,
        33, 36, 39, 43, 47, 51, 56, 62, 68, 75, 82, 91)
+
+# Any body: lengths are drawn from size_length_mm, evenly in log, then these.
+BODY_ASPECT = (1.8, 3.2)                     # length over end-cap diameter
+BODY_DIAMETER_MM = (1.5, 4.5)
+BODY_WAIST = (0.78, 0.98)
 
 LEAD_RGB = (0.51, 0.52, 0.52)                # tinned copper, as bright as on the real plate
 LEAD_CLEARANCE_MM = 0.5                      # leads and clutter keep at least this off every body
@@ -160,6 +166,24 @@ class Settings:
     focus_shift: float = 0.0               # focus distance minus the distance to the plate centre, px
     mjpg_quality: tuple[int, int] = (85, 92)
     sharpen: tuple[float, float] = (0.5, 1.0)   # the camera's sharpening, unsharp-mask amount
+    # Variation beyond the measured look; each is a chance per body (the first two) or per frame.
+    random_body_fraction: float = 0.0      # body paint of any hue, pale to saturated, dark to light
+    random_size_fraction: float = 0.0      # body of any size in size_length_mm
+    size_length_mm: tuple[float, float] = (3.2, 11.0)
+    hard_light_fraction: float = 0.0       # one or two hard lights casting long shadows
+    shade_fraction: float = 0.0            # broad soft shade over part of the plate, as from the arm
+    tint_fraction: float = 0.0             # the light's colour changes across the plate
+    exposure_fraction: float = 0.0         # camera under- or over-exposed (with _through_camera)
+    # The objects profile ([synthetic_objects]): every object of a pickable size is labelled, each
+    # with its kind. Off by default, so plain sets are drawn exactly as before.
+    objects_profile: bool = False          # label kinds, record leads, keep bodies on the rounded plate
+    labelled_objects_per_frame: tuple[int, int] = (0, 0)   # non-resistor objects per frame
+    object_size_mm: tuple[float, float] = (2.0, 25.0)      # longest side of made-up shapes and cylinders
+    edge_fraction: float = 0.0             # chance a body or object is placed close to a plate edge
+    edge_gap_mm: tuple[float, float] = (0.5, 8.0)          # how close: its nearest point to the edge
+    leads_off_plate: float = 0.0           # chance a body's leads may run off the plate (cut by the plate mask,
+                                           # as on the rig); one placed against an edge always may, if above 0
+    back_dark: tuple[float, float] = (0.0, 0.0)            # light falls off away from the camera by this share
 
     def scaled(self, k):
         """The same frame drawn k times finer: every px quantity times k (pixel-centre convention)."""
@@ -173,8 +197,15 @@ class Settings:
                        camera=centre(self.camera), camera_height=self.camera_height * k)
 
     @classmethod
-    def from_config(cls, dataset):
-        area, syn = dataset["work_area"], dataset["synthetic"]
+    def from_config(cls, dataset, profile=None):
+        """Settings from configs/dataset.toml [synthetic]; profile "objects" applies [synthetic_objects]
+        over it."""
+        area, syn = dataset["work_area"], dict(dataset["synthetic"])
+        if profile is not None:
+            key = f"synthetic_{profile}"
+            if key not in dataset:
+                raise config.ConfigError(f"dataset.toml: no [{key}] for --profile {profile}")
+            syn.update(dataset[key])
         rect = rectify.Settings.from_config(dataset)
         width, height = rect.size
         x0, y0 = area["x0"], area["y0"]
@@ -216,6 +247,20 @@ class Settings:
             focus_shift=syn["focus_shift_mm"] * s,
             mjpg_quality=tuple(syn["mjpg_quality"]),
             sharpen=tuple(syn["sharpen"]),
+            random_body_fraction=syn["random_body_fraction"],
+            random_size_fraction=syn["random_size_fraction"],
+            size_length_mm=tuple(syn["size_length_mm"]),
+            hard_light_fraction=syn["hard_light_fraction"],
+            shade_fraction=syn["shade_fraction"],
+            tint_fraction=syn["tint_fraction"],
+            exposure_fraction=syn["exposure_fraction"],
+            objects_profile=bool(syn.get("objects_profile", False)),
+            labelled_objects_per_frame=tuple(syn.get("labelled_objects_per_frame", (0, 0))),
+            object_size_mm=tuple(syn.get("object_size_mm", (2.0, 25.0))),
+            edge_fraction=float(syn.get("edge_fraction", 0.0)),
+            edge_gap_mm=tuple(syn.get("edge_gap_mm", (0.5, 8.0))),
+            leads_off_plate=float(syn.get("leads_off_plate", 0.0)),
+            back_dark=tuple(syn.get("back_dark", (0.0, 0.0))),
         )
 
 
@@ -231,6 +276,7 @@ class Look:
     shadow_offset: np.ndarray  # px
     shadow_sigma: float        # px
     shadow_strength: float
+    cast: tuple = ()           # hard lights' shadows: (offset px, sigma px, strength) each
 
 
 @dataclass
@@ -248,7 +294,15 @@ class Resistor:
     camera_height: float
     leads: list = field(default_factory=list)  # (points N×2, width px, rgb)
     band_style: np.ndarray | None = None  # per band: width scale, edge wobble, wobble phase, colour gain
+    band_shows: float = 0.7               # how much the body shows through its bands
     texture: np.ndarray | None = None     # phases of the paint's fine texture
+    # Other round bodies drawn the same way (the objects profile): what it is, plain painted rings
+    # instead of resistor bands, and how its leads leave it.
+    kind: str = "resistor"
+    stripes: tuple = ()                   # (centre as a fraction of the length, width fraction, rgb) each
+    lead_style: str = "axial"             # "axial": one out of each end; "radial": both out of one end; "none"
+    lead_pitch: float = 0.0               # px between radial leads
+    at_edge: bool = False                 # placed against a plate edge (edge_fraction)
 
     @property
     def lean(self):
@@ -281,6 +335,12 @@ class Resistor:
     def polygon(self):
         return Polygon(self.outline())
 
+    @property
+    def first_end(self):
+        """The end of the body that band 1 is nearest, where it appears, px."""
+        axis = np.array([math.cos(self.yaw), math.sin(self.yaw)])
+        return self.seen_centre + (1 if self.flipped else -1) * axis * self.length / 2
+
 
 @dataclass
 class Frame:
@@ -288,6 +348,12 @@ class Frame:
     polygons: list             # visible body outlines, N×2, px
     ids: list                  # each polygon's value in instance_map
     instance_map: np.ndarray   # H×W uint16: 0 background, i+1 where body i is on top
+    bands: list = field(default_factory=list)  # each polygon's (band names in reading order, band 1's end px)
+    # The objects profile: each polygon's kind ("resistor", "diode", ...), and its leads (list of N×2 px,
+    # empty for none) with its drawing order, later on top, for telling which of two crossing leads is uppermost.
+    kinds: list = field(default_factory=list)
+    leads: list = field(default_factory=list)
+    order: list = field(default_factory=list)
 
 
 # --- Body geometry -----------------------------------------------------------------------------
@@ -349,8 +415,21 @@ def _bands(package, rng):
     return [DIGITS[d] for d in digits] + [multiplier, package.tolerance]
 
 
+def _any_body(pkg, st, rng):
+    """pkg with any paint and any size, by the chances in st."""
+    if rng.random() < st.random_body_fraction:
+        rgb = colorsys.hsv_to_rgb(rng.uniform(0, 1), rng.uniform(0.1, 0.9), rng.uniform(0.2, 0.92))
+        pkg = replace(pkg, body_rgb=tuple(int(v * 255) for v in rgb))
+    if rng.random() < st.random_size_fraction:
+        length = math.exp(rng.uniform(*np.log(st.size_length_mm)))
+        diameter = float(np.clip(length / rng.uniform(*BODY_ASPECT), *BODY_DIAMETER_MM))
+        pkg = replace(pkg, length_mm=(length, length), diameter_mm=(diameter, diameter),
+                      waist=rng.uniform(*BODY_WAIST), lead_mm=float(np.clip(0.25 * diameter, 0.4, 0.8)))
+    return pkg
+
+
 def _sample_resistor(st, rng):
-    pkg = PACKAGES[rng.choice(len(PACKAGES), p=PACKAGE_P)]
+    pkg = _any_body(PACKAGES[rng.choice(len(PACKAGES), p=PACKAGE_P)], st, rng)
     x0, y0, x1, y1 = st.work_area
     # Brightness varies more than hue: band colours sit against this body colour.
     rgb = np.array(pkg.body_rgb, np.float32) / 255 * rng.uniform(0.88, 1.08) * rng.uniform(0.96, 1.04, 3)
@@ -359,8 +438,9 @@ def _sample_resistor(st, rng):
     # thin enough that the body colour shows through a little.
     band_style = np.column_stack([rng.uniform(0.75, 1.3, n), rng.uniform(0, 0.012, n),
                                   rng.uniform(0, 2 * math.pi, n), rng.uniform(0.85, 1.12, n),
-                                  rng.uniform(0.8, 0.97, n)])
+                                  rng.uniform(0.92, 1.0, n)])
     return Resistor(
+        band_shows=rng.uniform(*BAND_BODY_SHOWS),
         band_style=band_style,
         texture=rng.uniform(0, 2 * math.pi, 4),
         package=pkg,
@@ -375,6 +455,104 @@ def _sample_resistor(st, rng):
         camera=np.array(st.camera, float),
         camera_height=st.camera_height,
     )
+
+
+# Non-resistor objects in the objects profile, and how often each is drawn. Round bodies with leads
+# (ROD_KINDS) are placed like resistors; the rest are packages and shapes placed after them.
+OBJECT_KINDS = (
+    ("diode", 0.18), ("capacitor_axial", 0.06), ("capacitor_lying", 0.04), ("cylinder", 0.07),
+    ("capacitor_radial", 0.08), ("capacitor_ceramic", 0.08), ("dip8", 0.10), ("to92", 0.05),
+    ("to220", 0.05), ("screw", 0.10), ("nut", 0.04), ("block", 0.08), ("blob", 0.07),
+)
+OBJECT_P = np.array([w for _, w in OBJECT_KINDS]) / sum(w for _, w in OBJECT_KINDS)
+ROD_KINDS = ("diode", "capacitor_axial", "capacitor_lying", "cylinder")
+SLEEVE_RGB = ((0.10, 0.16, 0.52), (0.08, 0.08, 0.09), (0.42, 0.28, 0.14), (0.74, 0.70, 0.60), (0.12, 0.35, 0.18))
+ALU_RGB = (0.74, 0.75, 0.77)                  # a capacitor can's top
+CERAMIC_RGB = ((0.78, 0.48, 0.16), (0.85, 0.70, 0.25), (0.20, 0.35, 0.65), (0.55, 0.30, 0.15))
+
+
+def _any_colour(rng):
+    return np.array(colorsys.hsv_to_rgb(rng.uniform(0, 1), rng.uniform(0.0, 0.9), rng.uniform(0.08, 0.95)), np.float32)
+
+
+def _log_uniform(rng, lo, hi):
+    return math.exp(rng.uniform(math.log(lo), math.log(hi)))
+
+
+def _sample_rod(kind, st, rng):
+    """A non-resistor round body, drawn like a resistor (see ROD_KINDS): a diode, an axial capacitor,
+    a radial capacitor lying on its side, or a plain cylinder of any colour without leads."""
+    x0, y0, x1, y1 = st.work_area
+    stripes, style, pitch, gloss = (), "axial", 0.0, rng.uniform(0.05, 0.3)
+    if kind == "diode":
+        if rng.random() < 0.5:                                  # glass (DO-35): orange-red, black band
+            length, dia, lead = rng.uniform(3.4, 4.6), rng.uniform(1.5, 2.0), 0.5
+            rgb = np.array((0.80, 0.42, 0.28), np.float32) * rng.uniform(0.8, 1.15)
+            stripes, gloss = ((rng.uniform(0.8, 0.88), rng.uniform(0.12, 0.18), (0.08, 0.06, 0.06)),), 0.5
+        else:                                                   # moulded (DO-41): black, grey band
+            length, dia, lead = rng.uniform(4.2, 5.4), rng.uniform(2.4, 2.8), 0.8
+            rgb = np.array(EPOXY_RGB, np.float32) * rng.uniform(0.9, 1.5)
+            stripes = ((rng.uniform(0.82, 0.9), rng.uniform(0.1, 0.16), (0.62, 0.62, 0.64)),)
+    elif kind in ("capacitor_axial", "capacitor_lying"):
+        dia = rng.uniform(4.0, 10.0)
+        length, lead = dia * rng.uniform(1.4, 2.4), 0.6
+        rgb = np.array(SLEEVE_RGB[rng.integers(len(SLEEVE_RGB))], np.float32) * rng.uniform(0.85, 1.15)
+        stripes = ((rng.uniform(0.08, 0.14), 0.14, np.clip(rgb * 0.4 + 0.45, 0, 1)),)  # the polarity mark
+        if kind == "capacitor_lying":
+            style, pitch = "radial", rng.uniform(2.0, 5.0)
+            stripes += ((0.97, 0.06, ALU_RGB),)
+    else:                                                       # a plain cylinder: dowel, pin, standoff
+        length = _log_uniform(rng, max(st.object_size_mm[0], 3.0), st.object_size_mm[1])
+        dia, lead, style = min(length, rng.uniform(1.5, 8.0)), 0.6, "none"
+        rgb = _any_colour(rng)
+    pkg = Package(kind, (length, length), (dia, dia), 1.0, tuple(int(v * 255) for v in np.clip(rgb, 0, 1)),
+                  0, "", lead, 0.0)
+    return Resistor(
+        package=pkg, length=length * st.px_per_mm, radius=dia * st.px_per_mm / 2,
+        yaw=rng.uniform(0, math.pi), centre=np.array([rng.uniform(x0, x1), rng.uniform(y0, y1)]),
+        bands=[], flipped=bool(rng.random() < 0.5), body_rgb=np.clip(rgb, 0, 1).astype(np.float32),
+        gloss=gloss, camera=np.array(st.camera, float), camera_height=st.camera_height,
+        texture=rng.uniform(0, 2 * math.pi, 4), kind=kind, stripes=stripes, lead_style=style,
+        lead_pitch=pitch * st.px_per_mm,
+    )
+
+
+def _plate_shape(st):
+    """The plate's top surface, rounded corners and all, as a shapely polygon in px."""
+    x0, y0, x1, y1 = st.plate
+    r = st.plate_radius
+    return box(x0 + r, y0 + r, x1 - 1 - r, y1 - 1 - r).buffer(r, 16)
+
+
+def _edge_sides(st, rng):
+    """Which plate edges to put something against (0 left, 1 right, 2 top, 3 bottom; two for a
+    corner), each with its gap in px."""
+    sides = [int(rng.integers(4))]
+    if rng.random() < 0.2:                                      # a corner
+        sides.append(int(rng.integers(2, 4)) if sides[0] < 2 else int(rng.integers(0, 2)))
+    return [(side, rng.uniform(*st.edge_gap_mm) * st.px_per_mm) for side in sides]
+
+
+def _edge_shift(outline, side, gap, area):
+    """The move that puts outline's nearest point gap px inside the given edge of area."""
+    x0, y0, x1, y1 = area
+    if side == 0:
+        return np.array([x0 + gap - outline[:, 0].min(), 0.0])
+    if side == 1:
+        return np.array([x1 - 1 - gap - outline[:, 0].max(), 0.0])
+    if side == 2:
+        return np.array([0.0, y0 + gap - outline[:, 1].min()])
+    return np.array([0.0, y1 - 1 - gap - outline[:, 1].max()])
+
+
+def _to_edge(res, st, rng):
+    """Moves res so it lies close to one plate edge, or two at a corner (its apparent outline moves a
+    little with position, so twice)."""
+    sides = _edge_sides(st, rng)
+    for _ in range(2):
+        for side, gap in sides:
+            res.centre = res.centre + _edge_shift(res.outline(), side, gap, st.work_area)
+    res.at_edge = True
 
 
 def _contact(anchor, res, base, direction):
@@ -401,16 +579,20 @@ def _contact(anchor, res, base, direction):
     return hi
 
 
-def _candidate(st, rng, placed, single):
-    """A new resistor, its placement mode and its anchor's index.
+def _candidate(st, rng, placed, single, kind="resistor"):
+    """A new resistor (or other round body, kind), its placement mode and its anchor's index.
 
     Modes: free (anchor None), touch (against the anchor) or overlap (partly over the anchor).
     Anchors come from single, the indices of placed bodies not yet in a pair. A free body may
-    also be laid parallel a few mm beside any placed body (a cluster, as people line them up).
+    also be laid parallel a few mm beside any placed body (a cluster, as people line them up), or,
+    with edge_fraction, close to a plate edge at any angle.
     """
-    res = _sample_resistor(st, rng)
+    res = _sample_resistor(st, rng) if kind == "resistor" else _sample_rod(kind, st, rng)
     mode = "free"
-    if single:
+    if st.edge_fraction > 0 and rng.random() < st.edge_fraction:
+        _to_edge(res, st, rng)
+        return res, mode, None
+    if single and kind == "resistor":
         r = rng.random()
         if r < st.overlap_fraction:
             mode = "overlap"
@@ -484,21 +666,25 @@ def _fits(res, mode, anchor, polys, min_gap):
     return True
 
 
-def _place_bodies(st, rng):
-    """Resistors with leads, in drawing order (bottom first), and their body polygons.
+def _place_bodies(st, rng, kinds=()):
+    """Resistors with leads, then the round bodies in kinds (ROD_KINDS), in drawing order (bottom
+    first), and their body polygons.
 
-    Every resistor, leads included, lies wholly inside the work area, and no lead crosses a body.
-    Bodies touching or overlapping on purpose come in pairs; everything else keeps the minimum gap.
-    Leads may cross other leads.
+    Every resistor, leads included, lies wholly inside the work area (for a body whose leads may run
+    off the plate, see leads_off_plate, only the body: on the plate itself), and no lead crosses a body. Bodies touching or overlapping on purpose
+    come in pairs; everything else keeps the minimum gap. Leads may cross other leads.
     """
     lo, hi = st.bodies_per_frame
     n = 0 if rng.random() < st.empty_fraction else int(rng.integers(lo, hi + 1))
     min_gap = st.min_gap_mm * st.px_per_mm
+    plate = _plate_shape(st) if st.objects_profile else None
     bodies, polys, wires, single = [], [], [], []
-    for _ in range(n):
+    for kind in ["resistor"] * n + list(kinds):
         for _ in range(ATTEMPTS):
-            cand = _candidate(st, rng, bodies, single)
+            cand = _candidate(st, rng, bodies, single, kind)
             if cand is None or not _inside(cand[0].outline(), st.work_area):
+                continue
+            if plate is not None and not plate.contains(cand[0].polygon()):
                 continue
             res, mode, anchor = cand
             if not _fits(res, mode, anchor, polys, min_gap):
@@ -530,9 +716,12 @@ def _fit_leads(res, rng, st, polys):
     Returns the leads' shape for later bodies to keep clear of, or None if no try fits.
     """
     clearance = LEAD_CLEARANCE_MM * st.px_per_mm
+    off_plate = st.leads_off_plate > 0 and (res.at_edge or rng.random() < st.leads_off_plate)
     for _ in range(LEAD_TRIES):
         res.leads = _leads(res, rng, st)
-        if not all(_inside(p, st.work_area, w / 2) for p, w, _ in res.leads):
+        if not res.leads:
+            return res.polygon().buffer(0.0)            # nothing to keep clear but the body itself
+        if not off_plate and not all(_inside(p, st.work_area, w / 2) for p, w, _ in res.leads):
             continue
         wire = _wire_shape(res.leads, clearance)
         if not any(wire.intersects(p) for p in polys):
@@ -564,13 +753,22 @@ def _lead_path(start, heading, length, rng, st, kink):
 
 
 def _leads(res, rng, st):
-    """Two leads out of the end caps. Each is (points N×2, width px, rgb)."""
+    """The body's leads, each (points N×2, width px, rgb): one out of each end cap ("axial"), both
+    out of one end side by side ("radial"), or none."""
+    if res.lead_style == "none":
+        return []
     width = res.package.lead_mm * st.px_per_mm
-    rgb = np.array(LEAD_RGB, np.float32) * rng.uniform(0.9, 1.1)
+    hard = rng.random() < st.hard_light_fraction       # a lead catching a hard light shines
+    rgb = np.clip(np.array(LEAD_RGB, np.float32) * rng.uniform(*((0.7, 1.8) if hard else (0.9, 1.1))), 0, 1)
     leads = []
-    for sign in (-1.0, 1.0):
-        axis = sign * np.array([math.cos(res.yaw), math.sin(res.yaw)])
-        start = res.seen_centre + axis * (res.length / 2 - 0.4 * res.radius)  # hidden inside the cap
+    along = np.array([math.cos(res.yaw), math.sin(res.yaw)])
+    if res.lead_style == "radial":
+        across = np.array([-along[1], along[0]])
+        ends = [(along, across * side * res.lead_pitch / 2) for side in (-1.0, 1.0)]
+    else:
+        ends = [(sign * along, np.zeros(2)) for sign in (-1.0, 1.0)]
+    for axis, offset in ends:
+        start = res.seen_centre + axis * (res.length / 2 - 0.4 * res.radius) + offset  # hidden inside the cap
         length = rng.uniform(*st.lead_length_mm) * st.px_per_mm
         pts = _lead_path(start, math.atan2(axis[1], axis[0]), length, rng, st, rng.random() < st.kink_fraction)
         leads.append((pts, width, rgb))
@@ -681,6 +879,138 @@ def _component(st, rng, at, kind):
     return {"parts": parts, "legs": legs, "lean": lean, "extent": pts}, Polygon(hull)
 
 
+def _component_label(comp):
+    """A packaged part's outline as it appears, legs excluded (its label): each part's footprint
+    swept up to its top face, joined. Returns a shapely Polygon (outer edge only)."""
+    pieces = []
+    for part in comp["parts"]:
+        lift = comp["lean"] * part["height"]
+        if part.get("convex", True):
+            pieces.append(Polygon(cv2.convexHull(np.vstack([part["poly"], part["poly"] + lift])
+                                                 .astype(np.float32)).reshape(-1, 2)))
+        else:
+            pieces += [Polygon(part["poly"] + t * lift).buffer(0) for t in np.linspace(0.0, 1.0, 12)]
+    whole = unary_union(pieces)
+    biggest = max(getattr(whole, "geoms", [whole]), key=lambda g: g.area)
+    return Polygon(biggest.exterior)
+
+
+def _prism(st, at, footprint, height_mm, top, side, **extra):
+    """A component dict (as _component makes) for one solid standing on footprint (N×2 px)."""
+    lean = (np.asarray(at, float) - st.camera) / st.camera_height
+    part = {"poly": footprint, "height": height_mm * st.px_per_mm, "top": top, "side": side, **extra}
+    pts = np.vstack([footprint, footprint + lean * part["height"]])
+    return {"parts": [part], "legs": [], "lean": lean, "extent": pts}
+
+
+def _object(kind, st, rng, at, yaw):
+    """A labelled non-round object at `at` (px), turned by yaw: (kwargs for _draw, label Polygon,
+    the Polygon to keep other things off, legs included). Draws the same object for the same rng state."""
+    s = st.px_per_mm
+    at = np.asarray(at, float)
+    ax = np.array([math.cos(yaw), math.sin(yaw)])
+    sd = np.array([-ax[1], ax[0]])
+    if kind == "screw":
+        scr, _ = _screw(st, rng, at, yaw)
+        k = rng.uniform(0.6, 1.3)                           # M2 to M4-ish
+        for key in ("head_r", "head_len", "shaft_r", "shaft_len", "pitch"):
+            scr[key] *= k
+        label = Polygon(_screw_outline(scr)).buffer(0)
+        return {"screw": scr}, label, label
+    if kind in ("to220", "to92", "dip8"):
+        comp, hull = _component(st, rng, at, kind)
+        return {"component": comp}, _component_label(comp), hull
+    if kind == "capacitor_radial":                          # standing on its legs: a can seen from above
+        r = rng.uniform(2.0, 5.0) * s
+        sleeve = np.array(SLEEVE_RGB[rng.integers(len(SLEEVE_RGB))], np.float32) * rng.uniform(0.85, 1.15)
+        alu = np.array(ALU_RGB, np.float32) * rng.uniform(0.85, 1.1)
+        arm, half = 0.6 * r, 0.08 * r
+        corners = ((-1, -1), (1, -1), (1, 1), (-1, 1))
+        cross = [(np.array([at + ax * arm * d + sd * half * w for d, w in corners]), alu * 0.55),   # the vent,
+                 (np.array([at + sd * arm * d + ax * half * w for d, w in corners]), alu * 0.55)]   # lifted to the top
+        comp = _prism(st, at, _circle(at, r, 40), rng.uniform(5.0, 12.0), alu, sleeve * 0.8, marks=cross)
+        label = _component_label(comp)
+        return {"component": comp}, label, label
+    if kind == "capacitor_ceramic":                         # a disc lying flat, two legs out of one side
+        r = rng.uniform(1.5, 5.0) * s
+        t = np.linspace(0, 2 * math.pi, 40, endpoint=False)
+        foot = at + np.stack([np.cos(t) * r, np.sin(t) * r * rng.uniform(0.75, 1.0)], 1) @ np.array([ax, sd])
+        rgb = np.array(CERAMIC_RGB[rng.integers(len(CERAMIC_RGB))], np.float32) * rng.uniform(0.85, 1.15)
+        comp = _prism(st, at, foot, rng.uniform(1.5, 3.0), rgb, rgb * 0.65)
+        pitch = rng.uniform(2.5, 5.0) * s
+        tin = np.array(TIN_RGB, np.float32) * rng.uniform(0.9, 1.1)
+        for side in (-0.5, 0.5):
+            start = at - ax * r * 0.8 + sd * side * pitch
+            pts = _lead_path(start, math.atan2(-ax[1], -ax[0]), rng.uniform(8, 20) * s, rng, st, False)
+            comp["legs"].append((pts, 0.55 * s, tin))
+        comp["extent"] = np.vstack([comp["extent"]] + [l[0] for l in comp["legs"]])
+        hull = Polygon(cv2.convexHull(comp["extent"].astype(np.float32)).reshape(-1, 2))
+        return {"component": comp}, _component_label(comp), hull
+    if kind == "nut":                                       # hexagon with a through hole
+        r = rng.uniform(2.0, 4.0) * s
+        t = yaw + np.arange(6) * math.pi / 3
+        hexagon = at + np.stack([np.cos(t), np.sin(t)], 1) * r
+        zinc = np.array(ZINC_RGB, np.float32) * rng.uniform(0.85, 1.1)
+        comp = _prism(st, at, hexagon, rng.uniform(1.6, 3.2), zinc, zinc * 0.7,
+                      holes=[_circle(at, 0.45 * r, 24)])
+        label = _component_label(comp)
+        return {"component": comp}, label, label
+    # Made-up shapes, any colour, longest side in object_size_mm: a block or a lumpy blob.
+    size = _log_uniform(rng, *st.object_size_mm) * s
+    rgb = _any_colour(rng)
+    if kind == "block":
+        w = max(size / rng.uniform(1.0, 4.0), 1.5 * s)
+        foot = np.array([at + ax * u * size / 2 + sd * v * w / 2 for u, v in ((-1, -1), (1, -1), (1, 1), (-1, 1))])
+        comp = _prism(st, at, foot, rng.uniform(1.0, min(6.0, size / s)), rgb, rgb * rng.uniform(0.5, 0.8))
+    else:
+        t = np.linspace(0, 2 * math.pi, 48, endpoint=False)
+        bumps = sum(rng.uniform(0, 0.18) * np.cos(k * t + rng.uniform(0, 6.3)) for k in (2, 3, 4, 5))
+        squash = rng.uniform(0.4, 1.0)
+        foot = at + np.stack([np.cos(t), np.sin(t) * squash], 1) * (size / 2 * (1 + bumps))[:, None] @ np.array([ax, sd])
+        comp = _prism(st, at, foot, rng.uniform(1.0, min(5.0, size / s)), rgb, rgb * rng.uniform(0.5, 0.8),
+                      convex=False)
+    label = _component_label(comp)
+    return {"component": comp}, label, label
+
+
+def _place_objects(st, rng, kinds, polys, wires):
+    """Labelled packages and shapes (kinds not in ROD_KINDS) clear of the bodies and their leads, and
+    of each other: a list of dicts with "kind", "draw" (kwargs for _draw), "label" and "clear" (Polygons).
+    The object itself lies on the plate; with leads_off_plate its legs may run off it."""
+    s = st.px_per_mm
+    x0, y0, x1, y1 = st.work_area
+    plate = _plate_shape(st)
+    min_gap = st.min_gap_mm * s
+    clearance = LEAD_CLEARANCE_MM * s
+    avoid = unary_union(list(polys) + ([wires] if wires is not None else []))
+    out = []
+    for kind in kinds:
+        for _ in range(ATTEMPTS):
+            seed = int(rng.integers(2 ** 32))
+            yaw = rng.uniform(0, 2 * math.pi)
+            at = np.array([rng.uniform(x0 + 2 * s, x1 - 2 * s), rng.uniform(y0 + 2 * s, y1 - 2 * s)])
+            draw, label, clear = _object(kind, st, np.random.default_rng(seed), at, yaw)
+            at_edge = st.edge_fraction > 0 and rng.random() < st.edge_fraction
+            off_plate = st.leads_off_plate > 0 and (at_edge or rng.random() < st.leads_off_plate)
+            if at_edge:
+                sides = _edge_sides(st, rng)
+                for _ in range(2):          # the apparent outline moves a little with position
+                    for side, gap in sides:
+                        at = at + _edge_shift(np.asarray(label.exterior.coords), side, gap, st.work_area)
+                    draw, label, clear = _object(kind, st, np.random.default_rng(seed), at, yaw)
+            if not plate.contains(label):
+                continue
+            if not off_plate and not _inside(np.reshape(clear.bounds, (2, 2)), st.work_area):
+                continue
+            if clear.buffer(clearance).intersects(avoid) or any(label.distance(p) < min_gap for p in polys):
+                continue
+            if any(clear.buffer(clearance).intersects(o["clear"]) for o in out):
+                continue
+            out.append({"kind": kind, "draw": draw, "label": label, "clear": clear})
+            break
+    return out
+
+
 def _distractors(st, rng, polys, objects, wires=None):
     """Unlabelled clutter clear of the bodies, as kwargs for _draw.
 
@@ -699,8 +1029,11 @@ def _distractors(st, rng, polys, objects, wires=None):
                              p=(0.35, 0.25, 0.2, 0.2)))
     if objects:
         lo, hi = st.objects_per_frame
-        kinds += list(rng.choice(["screw", "shaving", "to220", "to92", "dip8"], int(rng.integers(lo, hi + 1)),
-                                 p=(0.25, 0.15, 0.25, 0.15, 0.2)))
+        if st.labelled_objects_per_frame[1] > 0:     # screws and parts are labelled objects now: only shavings
+            kinds += ["shaving"] * int(rng.integers(lo, hi + 1))
+        else:
+            kinds += list(rng.choice(["screw", "shaving", "to220", "to92", "dip8"], int(rng.integers(lo, hi + 1)),
+                                     p=(0.25, 0.15, 0.25, 0.15, 0.2)))
     out, taken = [], []
     for kind in kinds:
         for _ in range(15):
@@ -769,7 +1102,14 @@ def _look(st, rng):
     ambient = rng.uniform(0.6, 0.85)          # the room light is soft: shading is gentle
     diffuse = 1 - ambient
     height = 1.2 * st.px_per_mm  # roughly how far a body stands off the plate
+    cast = ()
+    if rng.random() < st.hard_light_fraction:          # leads bow up off the plate, so these fall far
+        s = st.px_per_mm
+        angles = rng.uniform(0, 2 * math.pi, int(rng.integers(1, 3)))
+        cast = tuple((np.array([math.cos(a), math.sin(a)]) * rng.uniform(2, 7) * s,
+                      rng.uniform(0.4, 1.4) * s, rng.uniform(0.2, 0.55)) for a in angles)
     return Look(
+        cast=cast,
         light=light,
         half=half / np.linalg.norm(half),
         ambient=ambient,
@@ -913,12 +1253,16 @@ def _body_layer(res, look, rect):
             ph = res.texture
             grain = (np.sin(1.1 * u + 1.9 * v + ph[0]) + np.sin(2.6 * u - 0.7 * v + ph[1])
                      + np.sin(0.45 * u + 3.1 * v + ph[2]) + np.sin(3.7 * u + 1.3 * v + ph[3])) / 4
-        style = (res.band_style if res.band_style is not None
-                 else np.tile([1.0, 0.0, 0.0, 1.0, 1.0], (len(res.bands), 1)))
-        for (p, name), (scale, wobble, phase, gain, cover) in zip(zip(BAND_POSITIONS[len(res.bands)], res.bands), style):
-            edge = pos - p + wobble * np.sin(3 * v / max(radius, 1.0) + phase)
-            m = np.abs(edge) < BAND_WIDTH * scale / 2
-            albedo[m] = (1 - cover) * res.body_rgb + cover * np.clip(BAND_RGB[name] * gain, 0, 1)
+        if res.bands:
+            style = (res.band_style if res.band_style is not None
+                     else np.tile([1.0, 0.0, 0.0, 1.0, 1.0], (len(res.bands), 1)))
+            for (p, name), (scale, wobble, phase, gain, cover) in zip(zip(BAND_POSITIONS[len(res.bands)], res.bands), style):
+                edge = pos - p + wobble * np.sin(3 * v / max(radius, 1.0) + phase)
+                m = np.abs(edge) < BAND_WIDTH * scale / 2
+                paint = np.clip(BAND_RGB[name] * gain, 0, 1) * ((1 - res.band_shows) + res.band_shows * res.body_rgb)
+                albedo[m] = (1 - cover) * res.body_rgb + cover * paint
+        for p, w, rgb in res.stripes:              # plain rings: a diode's cathode band, a capacitor's sleeve mark
+            albedo[np.abs(pos - p) < w / 2] = rgb
         return albedo * (1 + 0.035 * grain)[..., None]
 
     def gloss_of(u):
@@ -926,17 +1270,19 @@ def _body_layer(res, look, rect):
         if res.flipped:
             pos = 1 - pos
         gloss = np.full(u.shape, res.gloss)
-        for p, name in zip(BAND_POSITIONS[len(res.bands)], res.bands):
-            if name in ("gold", "silver"):
-                gloss[np.abs(pos - p) < BAND_WIDTH / 2] = 0.6
+        if res.bands:
+            for p, name in zip(BAND_POSITIONS[len(res.bands)], res.bands):
+                if name in ("gold", "silver"):
+                    gloss[np.abs(pos - p) < BAND_WIDTH / 2] = 0.6
         return gloss
 
     return _supersampled(rect, res.outline(), lambda xs, ys: _rod(
         xs, ys, res.seen_centre, res.yaw, radius_of, look, albedo_of, gloss_of))
 
 
-def _screw_layer(scr, look, rect):
-    """A screw lying on its side: pan head and threaded shaft, seen at the camera's angle."""
+def _screw_shape(scr):
+    """A screw's shape as seen: (centre px, axis, normal, total length px, head length px,
+    radius_of(u) giving the half-width and end rounding along the axis)."""
     axis = np.array([math.cos(scr["yaw"]), math.sin(scr["yaw"])])
     lean = scr["lean"]
     normal = np.array([-axis[1], axis[0]])
@@ -953,6 +1299,25 @@ def _screw_layer(scr, look, rect):
         tip = np.clip((a - (total - 0.4 * shaft_r)) / (0.4 * shaft_r), 0, 1)
         r = np.where((a >= 0) & (a <= total), r * np.sqrt(1 - tip ** 2), 0.0)
         return r, np.maximum(dome * 0.6, tip)
+
+    return centre, axis, normal, total, head_len, radius_of
+
+
+def _screw_outline(scr):
+    """A screw's outline as it appears (its label), N×2 px."""
+    centre, axis, normal, total, _, radius_of = _screw_shape(scr)
+    u = np.linspace(-total / 2, total / 2, 80)
+    r = np.maximum(radius_of(u)[0], 0.0)
+    r[[0, -1]] = 0.0
+    upper = centre + u[:, None] * axis + r[:, None] * normal
+    lower = centre + u[::-1, None] * axis - r[::-1, None] * normal
+    return np.vstack([upper, lower[1:-1]])
+
+
+def _screw_layer(scr, look, rect):
+    """A screw lying on its side: pan head and threaded shaft, seen at the camera's angle."""
+    centre, axis, normal, total, head_len, radius_of = _screw_shape(scr)
+    head_r = float(radius_of(np.array([head_len / 2 - total / 2]))[0][0])
 
     def albedo_of(u, v):
         a = u + total / 2
@@ -984,7 +1349,13 @@ def _component_layer(comp, origin, shape):
     for part in comp["parts"]:
         lift = comp["lean"] * part["height"]
         top = part["poly"] + lift
-        paint(cv2.convexHull(np.vstack([part["poly"], top]).astype(np.float32)).reshape(-1, 2), part["side"])
+        if part.get("convex", True):
+            paint(cv2.convexHull(np.vstack([part["poly"], top]).astype(np.float32)).reshape(-1, 2), part["side"])
+        else:                                   # the side of a non-convex prism: its footprint swept up
+            sweep = np.zeros(shape, np.float32)
+            for t in np.linspace(0.0, 1.0, 12):
+                sweep = np.maximum(sweep, _stroke(part["poly"] + t * lift - origin, 0, shape, fill=True))
+            paint(None, part["side"], sweep)
         paint(top, part["top"])
         for hole in part.get("holes", ()):
             a = _stroke(hole + lift - origin, 0, shape, fill=True)
@@ -1041,7 +1412,8 @@ def _draw(img, look, lines=(), body=None, blobs=(), edge=None, screw=None, marks
         groups.append(screw["at"] + np.array([[-span, -span], [span, span]]))
     pts = np.vstack(groups)
     widest = max((w for _, w, _ in lines), default=0)
-    margin = widest / 2 + np.abs(look.shadow_offset).max() + 3 * look.shadow_sigma + 2
+    shadows = ((look.shadow_offset, look.shadow_sigma, look.shadow_strength),) + look.cast
+    margin = widest / 2 + max(np.abs(o).max() + 3 * sigma for o, sigma, _ in shadows) + 2
     x0 = max(0, int(pts[:, 0].min() - margin))
     x1 = min(width, int(pts[:, 0].max() + margin) + 1)
     y0 = max(0, int(pts[:, 1].min() - margin))
@@ -1067,11 +1439,11 @@ def _draw(img, look, lines=(), body=None, blobs=(), edge=None, screw=None, marks
         body_alpha = layers[-1][0]
 
     silhouette = np.maximum.reduce([a for a, _ in layers])
-    shift = np.float32([[1, 0, look.shadow_offset[0]], [0, 1, look.shadow_offset[1]]])
-    shadow = cv2.warpAffine(silhouette, shift, (shape[1], shape[0]))
-    shadow = cv2.GaussianBlur(shadow, (0, 0), look.shadow_sigma)
     patch = img[y0:y1, x0:x1]
-    patch *= (1 - look.shadow_strength * shadow)[..., None]
+    for offset, sigma, strength in shadows:
+        shift = np.float32([[1, 0, offset[0]], [0, 1, offset[1]]])
+        shadow = cv2.warpAffine(silhouette, shift, (shape[1], shape[0]))
+        patch *= (1 - strength * cv2.GaussianBlur(shadow, (0, 0), sigma))[..., None]
     for a, premul in layers:
         patch *= (1 - a)[..., None]
         patch += premul
@@ -1258,6 +1630,34 @@ def _scene(st, rng):
     return img * (1 - alpha) + (plate * field[..., None]) * alpha
 
 
+def _room_light(img, st, rng):
+    """The room's light over everything drawn, in place: broad shade and a changing tint."""
+    shape = img.shape[:2]
+    yy, xx = np.mgrid[:shape[0], :shape[1]].astype(np.float32)
+    px0, py0, px1, py1 = st.plate
+
+    def across():
+        a = rng.uniform(0, 2 * math.pi)
+        return ((xx - (px0 + px1) / 2) * math.cos(a) + (yy - (py0 + py1) / 2) * math.sin(a)) / (px1 - px0)
+
+    if rng.random() < st.shade_fraction:
+        at, soft = rng.uniform(-0.4, 0.4), rng.uniform(0.03, 0.25)
+        wavy = across() + 0.05 * _noise(rng, shape, 30 * st.px_per_mm)
+        img *= (1 - rng.uniform(0.25, 0.6) * _smoothstep(at - soft, at + soft, wavy))[..., None]
+    if rng.random() < st.tint_fraction:
+        tint = rng.normal(0, 1, 3)
+        tint = (tint - tint.mean()) / np.linalg.norm(tint - tint.mean())
+        img *= (1 + rng.uniform(0.03, 0.14) * across()[..., None] * tint.astype(np.float32))
+    if st.back_dark[1] > 0:
+        # Light falls off away from the camera: on the rig the plate's far edge is about 8% darker
+        # than its near edge in the model's input (experiments/2026-11-09_front_back).
+        centre = np.array([(px0 + px1) / 2, (py0 + py1) / 2])
+        away = centre - np.asarray(st.camera, float)
+        away /= np.linalg.norm(away)
+        t = np.clip(((xx - centre[0]) * away[0] + (yy - centre[1]) * away[1]) / (px1 - px0) + 0.5, 0, 1)
+        img *= (1 - rng.uniform(*st.back_dark) * t)[..., None]
+
+
 def _camera(img, rng, st):
     """Focus blur growing towards the far side (right), the camera's sharpening (faint halos at
     edges), compression's softer colour detail, exposure, a slight tint, and low sensor noise;
@@ -1355,6 +1755,17 @@ def _through_camera(img, st, sr, rng):
     sigma = cv2.resize(sigma.astype(np.float32), size, interpolation=cv2.INTER_LINEAR)
     raw = _variable_blur(raw, sigma)
 
+    # Exposure: under-exposed the camera's tone curve deepens dark colours, over-exposed the plate
+    # clips. Brought back to the plate's level below, as `rectify` does, which raises the noise too.
+    exposure = 1.0
+    if rng.random() < st.exposure_fraction:
+        if rng.random() < 0.7:
+            exposure = math.exp(rng.uniform(math.log(0.3), 0.0))
+            power = 1 + (1 - exposure) * rng.uniform(0.0, 1.0)
+        else:
+            exposure, power = rng.uniform(1.05, 1.35), rng.uniform(0.7, 1.0)
+        raw = np.clip(raw, 0, 1) ** np.float32(power) * np.float32(exposure)
+
     # The sensor: a red-green-green-blue colour filter, a residual tint, shot and read noise.
     raw = np.clip(raw * rng.uniform(0.97, 1.03, 3).astype(np.float32), 0, 1)
     mosaic = np.empty(raw.shape[:2], np.float32)
@@ -1363,6 +1774,7 @@ def _through_camera(img, st, sr, rng):
     mosaic[1::2, 0::2] = raw[1::2, 0::2, 1]
     mosaic[1::2, 1::2] = raw[1::2, 1::2, 2]
     shot, read = rng.uniform(0.7e-6, 2.2e-6), rng.uniform(0.0003, 0.0006)   # after the camera's denoising
+    read /= min(exposure, 1.0)
     mosaic += rng.standard_normal(mosaic.shape).astype(np.float32) * np.sqrt(shot * mosaic + read ** 2)
     bayer = (np.clip(mosaic, 0, 1) * 65535).astype(np.uint16)
     rgb = cv2.cvtColor(bayer, cv2.COLOR_BayerBG2RGB_EA).astype(np.float32) / 65535   # BG2RGB decodes RGGB
@@ -1382,7 +1794,7 @@ def _through_camera(img, st, sr, rng):
     plate = rect[py0 + inset:py1 - inset, px0 + inset:px1 - inset].reshape(-1, 3)
     lum = plate.mean(1)
     white = np.median(plate[lum >= np.median(lum)], axis=0)
-    rect *= white.mean() / np.maximum(white, 1.0)
+    rect *= rectify.MODEL_PLATE_LEVEL / np.maximum(white, 1.0)
     return np.clip(rect + 0.5, 0, 255).astype(np.uint8)
 
 
@@ -1395,7 +1807,15 @@ def render_frame(st, rng, background=None):
     """
     sr = st.scaled(st.render_scale)
     look = _look(sr, rng)
-    bodies, polys = _place_bodies(sr, rng)
+    object_kinds = []
+    if st.labelled_objects_per_frame[1] > 0:
+        lo, hi = st.labelled_objects_per_frame
+        object_kinds = [OBJECT_KINDS[i][0] for i in rng.choice(len(OBJECT_KINDS), int(rng.integers(lo, hi + 1)), p=OBJECT_P)]
+    bodies, polys = _place_bodies(sr, rng, [k for k in object_kinds if k in ROD_KINDS])
+    things = []
+    if object_kinds:
+        rod_wires = unary_union([_wire_shape(b.leads, 0.0) for b in bodies if b.leads]) if bodies else None
+        things = _place_objects(sr, rng, [k for k in object_kinds if k not in ROD_KINDS], polys, rod_wires)
 
     if background is None:
         img = _scene(sr, rng)
@@ -1404,17 +1824,27 @@ def render_frame(st, rng, background=None):
             raise ValueError(f"background is {background.shape}, frame is {(st.height, st.width, 3)}")
         img = cv2.resize(background, (sr.width, sr.height), interpolation=cv2.INTER_CUBIC).astype(np.float32) / 255
 
-    wires = unary_union([_wire_shape(b.leads, 0.0) for b in bodies]) if bodies else None
-    for clutter in _distractors(sr, rng, polys, rng.random() < sr.objects_fraction, wires):
+    wires = unary_union([_wire_shape(b.leads, 0.0) for b in bodies if b.leads]) if bodies else None
+    avoid = polys + [t["clear"] for t in things]
+    for clutter in _distractors(sr, rng, avoid, rng.random() < sr.objects_fraction, wires):
         _draw(img, look, **clutter)
     instance_map = np.zeros((sr.height, sr.width), np.uint16)
-    for i, body in enumerate(bodies, start=1):
+    for i, thing in enumerate(things, start=1):           # labelled objects, under any body (they never overlap)
+        _draw(img, look, **thing["draw"])
+        cv2.fillPoly(instance_map, [np.round(np.asarray(thing["label"].exterior.coords)).astype(np.int32)], i)
+    for i, body in enumerate(bodies, start=len(things) + 1):
         drawn = _draw(img, look, body.leads, body)
         if drawn is not None:
             x0, y0, a = drawn
             instance_map[y0:y0 + a.shape[0], x0:x0 + a.shape[1]][a > 0.5] = i
+    _room_light(img, sr, rng)
 
-    polygons, ids = _labels(polys, sr)
+    # Everything labelled, in drawing order: the objects, then the round bodies.
+    items = [(t["kind"], None) for t in things] + [(b.kind, b) for b in bodies]
+    polygons, ids = _labels([t["label"] for t in things] + polys, sr)
+    first_ends = [items[i - 1][1].first_end if items[i - 1][1] is not None and items[i - 1][1].bands else None
+                  for i in ids]
+    leads = [[p for p, *_ in items[i - 1][1].leads] if items[i - 1][1] is not None else [] for i in ids]
     if st.camera_corners is not None:
         image = _through_camera(img, st, sr, rng)
     else:
@@ -1423,9 +1853,18 @@ def render_frame(st, rng, background=None):
         image = _camera(img, rng, st)
     if sr is not st:
         k = st.render_scale
-        polygons = [(p + 0.5) / k - 0.5 for p in polygons]
+        to_frame = lambda p: (p + 0.5) / k - 0.5
+        polygons = [to_frame(p) for p in polygons]
+        first_ends = [None if p is None else to_frame(p) for p in first_ends]
+        leads = [[to_frame(p) for p in group] for group in leads]
         instance_map = cv2.resize(instance_map, (st.width, st.height), interpolation=cv2.INTER_NEAREST)
-    return Frame(image, polygons, ids, instance_map)
+    bands = [((list(items[i - 1][1].bands), end) if end is not None else ([], None)) for i, end in zip(ids, first_ends)]
+    kinds = [items[i - 1][0] for i in ids] if st.objects_profile else []
+    if not st.objects_profile:
+        leads, order = [], []
+    else:
+        order = list(ids)
+    return Frame(image, polygons, ids, instance_map, bands, kinds, leads, order)
 
 
 # --- Writing a set -----------------------------------------------------------------------------
@@ -1475,13 +1914,34 @@ def _make_frame(job):
         "session": job.name,
         "source": "synthetic",
         "space": "rectified",
+        "labelled": "objects" if job.settings.objects_profile else "resistors",   # docs/labelling.md
         "width": job.settings.width,
         "height": job.settings.height,
-        "instances": [
-            {"polygon": manifest.polygon_to_json(p), "label_source": "synthetic"}
-            for p in frame.polygons
-        ],
+        "instances": instances_json(frame),
     }
+
+
+def instances_json(frame):
+    """A frame's labels as manifest instances. Resistors carry their bands and band 1's end; in the
+    objects profile every instance has its kind (non-resistors no bands), its leads simplified to
+    within 0.5 px, and its drawing order ("z": later is on top)."""
+    out = []
+    for i, (p, (names, end)) in enumerate(zip(frame.polygons, frame.bands)):
+        inst = {"polygon": manifest.polygon_to_json(p), "label_source": "synthetic"}
+        if frame.kinds:
+            inst["kind"] = frame.kinds[i]
+        if end is not None:
+            inst["bands"] = names
+            inst["first_end"] = [round(float(v), 2) for v in end]
+        elif frame.kinds:
+            inst["bands"] = []
+        if frame.kinds and frame.leads[i]:
+            inst["leads"] = [manifest.polygon_to_json(cv2.approxPolyDP(np.asarray(q, np.float32).reshape(-1, 1, 2),
+                                                                        0.5, False).reshape(-1, 2), 1)
+                             for q in frame.leads[i]]
+            inst["z"] = int(frame.order[i])
+        out.append(inst)
+    return out
 
 
 def main(argv=None):
@@ -1501,11 +1961,13 @@ def main(argv=None):
     parser.add_argument("--workers", type=int, default=4, help="processes; 1 runs in this process")
     parser.add_argument("--preview", type=int, default=5,
                         help="write outlined previews of the first N frames to preview/")
+    parser.add_argument("--profile", choices=["objects"],
+                        help="objects: every object of a pickable size labelled, with its kind ([synthetic_objects])")
     args = parser.parse_args(argv)
 
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", args.name) or set(args.name) == {"."}:
         parser.error(f"--name {args.name!r}: use letters, digits, '_', '-' and '.' only")
-    settings = Settings.from_config(dataset_cfg)
+    settings = Settings.from_config(dataset_cfg, args.profile)
 
     backgrounds = ()
     if args.backgrounds is not None:

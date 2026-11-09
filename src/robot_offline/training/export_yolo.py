@@ -80,14 +80,22 @@ def yolo_line(points, size):
 
 
 def export(samples, splits, out_dir, work_area, tile_size, overlap, min_visible_fraction,
-           class_names=("resistor_body",), rect_settings=None):
+           class_names=("resistor_body",), rect_settings=None, grey=False):
     """Writes a YOLO-seg tile dataset of samples to out_dir. Returns the path of dataset.yaml.
 
     splits: {session: "train" | "val" | "test"}; samples of other sessions are skipped.
     work_area: x0, y0, width, height in frame px. rect_settings: the rectified geometry, for the
-    plate mask (default from configs/dataset.toml).
+    plate mask (default from configs/dataset.toml). grey: tiles in greyscale (grey in all three
+    channels), for a model trained on grey input (tiling.wants_grey).
     """
     rect_settings = rect_settings or rectify.Settings.from_config()
+    if "object" in class_names:
+        # A frame with only its resistors outlined would teach that its other objects are background.
+        partial = sorted({s["session"] for s in samples if splits.get(s["session"]) in ("train", "val")
+                          and s.get("labelled", "resistors") != "objects"})
+        if partial:
+            raise ValueError(f"sessions {partial} have only resistors labelled (docs/labelling.md, 'labelled'); "
+                             "they cannot train the object class")
     out_dir = Path(out_dir)
     if out_dir.exists():
         shutil.rmtree(out_dir)
@@ -105,6 +113,8 @@ def export(samples, splits, out_dir, work_area, tile_size, overlap, min_visible_
         if image is None:
             raise FileNotFoundError(src)
         image = rectify.model_image(sample, image, rect_settings)
+        if grey:
+            image = cv2.cvtColor(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY), cv2.COLOR_GRAY2BGR)
         polygons = manifest.polygons(sample)
         stem = f"{sample['session']}_{Path(sample['image']).stem}"
         frame_tiles = tiling.tiles(work_area, (sample["width"], sample["height"]), tile_size, overlap)
@@ -134,7 +144,7 @@ def export(samples, splits, out_dir, work_area, tile_size, overlap, min_visible_
     return yaml_path
 
 
-def export_from_config(samples, splits, out_dir):
+def export_from_config(samples, splits, out_dir, grey=False):
     """export() with the work area, tiling and classes from configs/dataset.toml."""
     ds = config.load("dataset")
     area, tiles = ds["work_area"], ds["tiles"]
@@ -143,7 +153,7 @@ def export_from_config(samples, splits, out_dir):
         work_area=(area["x0"], area["y0"], area["width"], area["height"]),
         tile_size=tiles["size"], overlap=tiles["overlap"],
         min_visible_fraction=tiles["min_visible_fraction"],
-        class_names=tuple(ds["labels"]["classes"]),
+        class_names=tuple(ds["labels"]["classes"]), grey=grey,
     )
 
 
@@ -153,10 +163,11 @@ def main(argv=None):
         description="Export the manifest as a YOLO-seg dataset of tiles.",
     )
     parser.add_argument("--out", type=Path, default=config.DATA_DIR / "yolo")
+    parser.add_argument("--grey", action="store_true", help="greyscale tiles, for a grey-input model")
     args = parser.parse_args(argv)
     ds = config.load("dataset")
     samples = manifest.load(ds["labels"]["rules_version"])["samples"]
-    yaml_path = export_from_config(samples, splits_from_config(samples, ds), args.out)
+    yaml_path = export_from_config(samples, splits_from_config(samples, ds), args.out, grey=args.grey)
     print(f"Wrote {yaml_path}")
 
 

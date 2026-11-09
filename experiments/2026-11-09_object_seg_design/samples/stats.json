@@ -1,0 +1,253 @@
+{
+ "instances": 1837,
+ "per_kind": {
+  "resistor": {
+   "count": 1229,
+   "share": 0.669,
+   "length_mm": [
+    3.5,
+    6.5,
+    9.5
+   ],
+   "width_mm": [
+    1.7,
+    2.8,
+    4.5
+   ]
+  },
+  "diode": {
+   "count": 101,
+   "share": 0.055,
+   "length_mm": [
+    3.5,
+    4.4,
+    5.3
+   ],
+   "width_mm": [
+    1.7,
+    2.6,
+    3.4
+   ]
+  },
+  "dip8": {
+   "count": 69,
+   "share": 0.038,
+   "length_mm": [
+    10.0,
+    11.5,
+    12.9
+   ],
+   "width_mm": [
+    6.8,
+    8.1,
+    9.4
+   ]
+  },
+  "screw": {
+   "count": 55,
+   "share": 0.03,
+   "length_mm": [
+    5.8,
+    8.9,
+    16.3
+   ],
+   "width_mm": [
+    3.7,
+    6.0,
+    8.1
+   ]
+  },
+  "capacitor_ceramic": {
+   "count": 53,
+   "share": 0.029,
+   "length_mm": [
+    4.7,
+    7.2,
+    10.3
+   ],
+   "width_mm": [
+    3.1,
+    5.6,
+    8.9
+   ]
+  },
+  "block": {
+   "count": 48,
+   "share": 0.026,
+   "length_mm": [
+    2.7,
+    6.5,
+    22.2
+   ],
+   "width_mm": [
+    1.8,
+    3.5,
+    9.1
+   ]
+  },
+  "capacitor_radial": {
+   "count": 44,
+   "share": 0.024,
+   "length_mm": [
+    8.4,
+    11.7,
+    16.1
+   ],
+   "width_mm": [
+    4.2,
+    6.1,
+    9.4
+   ]
+  },
+  "capacitor_axial": {
+   "count": 41,
+   "share": 0.022,
+   "length_mm": [
+    8.3,
+    12.1,
+    18.6
+   ],
+   "width_mm": [
+    4.7,
+    6.9,
+    10.9
+   ]
+  },
+  "cylinder": {
+   "count": 39,
+   "share": 0.021,
+   "length_mm": [
+    3.3,
+    5.7,
+    19.4
+   ],
+   "width_mm": [
+    2.2,
+    3.4,
+    6.4
+   ]
+  },
+  "blob": {
+   "count": 36,
+   "share": 0.02,
+   "length_mm": [
+    3.0,
+    5.6,
+    14.5
+   ],
+   "width_mm": [
+    1.9,
+    3.8,
+    10.6
+   ]
+  },
+  "nut": {
+   "count": 34,
+   "share": 0.019,
+   "length_mm": [
+    5.7,
+    7.2,
+    9.2
+   ],
+   "width_mm": [
+    4.5,
+    5.6,
+    7.3
+   ]
+  },
+  "capacitor_lying": {
+   "count": 33,
+   "share": 0.018,
+   "length_mm": [
+    6.8,
+    11.6,
+    19.1
+   ],
+   "width_mm": [
+    4.4,
+    7.2,
+    11.3
+   ]
+  },
+  "to92": {
+   "count": 28,
+   "share": 0.015,
+   "length_mm": [
+    6.6,
+    7.6,
+    8.4
+   ],
+   "width_mm": [
+    5.4,
+    6.0,
+    7.1
+   ]
+  },
+  "to220": {
+   "count": 27,
+   "share": 0.015,
+   "length_mm": [
+    15.7,
+    16.4,
+    18.8
+   ],
+   "width_mm": [
+    10.2,
+    11.8,
+    13.5
+   ]
+  }
+ },
+ "edge": {
+  "within_3mm": {
+   "share": 0.201,
+   "pointing_at_edge_ge60deg": 116,
+   "diagonal_30_60deg": 115,
+   "parallel_lt30deg": 139,
+   "at_back_edge": 94
+  },
+  "within_5mm": {
+   "share": 0.32,
+   "pointing_at_edge_ge60deg": 188,
+   "diagonal_30_60deg": 191,
+   "parallel_lt30deg": 209,
+   "at_back_edge": 151
+  },
+  "within_8mm": {
+   "share": 0.478,
+   "pointing_at_edge_ge60deg": 284,
+   "diagonal_30_60deg": 279,
+   "parallel_lt30deg": 315,
+   "at_back_edge": 220
+  }
+ },
+ "synth_v2_edge": {
+  "within_3mm": {
+   "share": 0.033,
+   "pointing_at_edge_ge60deg": 0,
+   "diagonal_30_60deg": 16,
+   "parallel_lt30deg": 147,
+   "at_back_edge": 42
+  },
+  "within_5mm": {
+   "share": 0.062,
+   "pointing_at_edge_ge60deg": 0,
+   "diagonal_30_60deg": 45,
+   "parallel_lt30deg": 260,
+   "at_back_edge": 83
+  },
+  "within_8mm": {
+   "share": 0.112,
+   "pointing_at_edge_ge60deg": 4,
+   "diagonal_30_60deg": 112,
+   "parallel_lt30deg": 436,
+   "at_back_edge": 144
+  }
+ },
+ "bodies_with_leads": 1404,
+ "lead_off_plate_share": 0.479,
+ "synth_v2_instances": 4924,
+ "frames": 200,
+ "seed": 100,
+ "settings": "configs/dataset.toml [synthetic] + [synthetic_objects]"
+}

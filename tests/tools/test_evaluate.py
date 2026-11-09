@@ -56,3 +56,20 @@ def test_empty_frame():
     assert r["false_detections"] == 1 and r["ious"] == []
     s = evaluate.summarise([r])
     assert s["false_det_on_empty"] == 1
+
+
+def test_by_group_counts_found_bodies_per_group():
+    labels = [_body(100, 100), _body(300, 100), _body(500, 100)]
+    sample = {"instances": [{"group": "green"}, {"group": "green"}, {}]}
+    result = evaluate.score_frame(labels, labels[:1], PX_PER_MM)
+    assert evaluate.by_group([sample], [result]) == {"green": (1, 2)}
+
+
+def test_by_kind_counts_every_labelled_object_and_resistors_by_default():
+    from robot_offline.tools.evaluate import by_kind, false_detections_where_complete
+    samples = [{"instances": [{"polygon": []}, {"polygon": [], "kind": "screw"}], "labelled": "objects"},
+               {"instances": [{"polygon": [], "kind": "resistor"}]}]
+    results = [{"matched": [{"label_index": 1}], "false_detections": 2},
+               {"matched": [{"label_index": 0}], "false_detections": 5}]
+    assert by_kind(samples, results) == {"resistor": (1, 2), "screw": (1, 1)}
+    assert false_detections_where_complete(samples, results) == (2, 1)    # the second frame isn't complete

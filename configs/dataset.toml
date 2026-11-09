@@ -44,11 +44,14 @@ min_visible_fraction = 0.6  # a body clipped by a tile edge is kept only if this
 # Split by session, never by frame, so test frames are from a session the model has not seen.
 # Synthetic frames are always train.
 val_sessions = []
-test_sessions = []
+# Labelled real frames, never trained on. 2026-10-23_a/_b labels are synth_only_v1's own outlines
+# and _a tuned the synthetic look, so they only guard against getting worse.
+test_sessions = ["2026-10-23_a", "2026-10-23_b", "2026-10-29_ref", "2026-11-05_live", "2026-11-06_a",
+                 "2026-11-06_b", "2026-11-06_c"]
 
 [labels]
-classes = ["resistor_body"]
-rules_version = 1         # bump when docs/labelling.md changes meaning
+classes = ["object"]      # rules version 2: every object of a pickable size (was ["resistor_body"])
+rules_version = 2         # bump when docs/labelling.md changes meaning
 simplify_epsilon_px = 1.0 # approxPolyDP tolerance when masks become polygons
 
 [autolabel]
@@ -86,4 +89,26 @@ focus_shift_mm = 15.0     # focus distance minus the lens-to-plate-centre distan
 mjpg_quality = [80, 92]
 sharpen = [1.8, 2.5]      # the camera's sharpening, unsharp-mask amount (radius 0.8 raw px)
 jpeg_quality = [88, 97]   # frames are saved as JPEG, like the camera's MJPG stream
+# Beyond the measured look, so that no body colour, size or light is the model's only cue.
+random_body_fraction = 0.6  # chance a body has any paint: every hue, pale to saturated, dark to light
+random_size_fraction = 0.5  # chance a body has any size in size_length_mm (1/8 W to above 1/2 W)
+size_length_mm = [3.2, 11.0]
+hard_light_fraction = 0.5   # chance of one or two hard lights with long cast shadows, and shiny leads
+shade_fraction = 0.35       # chance of broad soft shade over part of the plate, as from the arm
+tint_fraction = 0.5         # chance the light's colour changes across the plate
+exposure_fraction = 0.6     # chance the camera is under- or over-exposed
 seed = 0
+
+[synthetic_objects]
+# `synth --profile objects`: these over [synthetic], for the object model
+# (experiments/2026-11-09_object_seg_design). Every object of a pickable size is labelled, with its kind.
+objects_profile = true
+labelled_objects_per_frame = [1, 5]  # non-resistors per frame: diodes, capacitors, op-amps, transistors,
+                                     # screws, nuts, made-up shapes (synth.OBJECT_KINDS has their shares)
+object_size_mm = [2.0, 25.0]  # made-up shapes and cylinders, longest side (assumed "pickable size")
+edge_fraction = 0.25      # chance a body or object is placed close to a plate edge, at any angle
+edge_gap_mm = [0.5, 8.0]  # its nearest point this far from the edge; on the rig, bodies within 5 mm were missed
+leads_off_plate = 0.2     # chance a body's leads may run off the plate (cut by the plate mask, as on the rig);
+                          # one placed against an edge always may. Allowed for all, 72% of bodies had a lead off
+                          # the plate, far more than on the rig
+back_dark = [0.0, 0.12]   # light falls off away from the camera by up to this share (measured about 8%)

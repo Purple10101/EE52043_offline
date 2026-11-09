@@ -202,3 +202,139 @@ def test_manifest_round_trip(tmp_path):
     assert again["samples"] == []
     with pytest.raises(ValueError):
         manifest.load(2, path)
+
+
+def test_any_body_varies_size_and_paint():
+    st = _with(random_body_fraction=1.0, random_size_fraction=1.0)
+    rng = np.random.default_rng(0)
+    bodies = [_sample_resistor(st, rng) for _ in range(200)]
+    lengths = np.array([b.length for b in bodies]) / st.px_per_mm
+    assert lengths.min() < 4 and lengths.max() > 9
+    assert all(1.5 <= 2 * b.radius / st.px_per_mm <= 4.5 for b in bodies)
+    assert len({tuple(b.package.body_rgb) for b in bodies}) > 150
+
+
+def test_room_light_changes_the_frame_but_not_its_labels():
+    plain = render_frame(_with(), np.random.default_rng(3))
+    lit = _with(random_body_fraction=1.0, random_size_fraction=1.0, hard_light_fraction=1.0,
+                shade_fraction=1.0, tint_fraction=1.0, exposure_fraction=1.0)
+    frame = render_frame(lit, np.random.default_rng(3))
+    assert frame.image.shape == plain.image.shape
+    assert frame.polygons
+    for polygon in frame.polygons:
+        assert Polygon(polygon).is_valid
+
+
+def test_each_label_knows_its_bands_and_which_end_is_band_one():
+    frame = render_frame(_with(), np.random.default_rng(4))
+    assert len(frame.bands) == len(frame.polygons)
+    for polygon, (names, end) in zip(frame.polygons, frame.bands):
+        assert len(names) in (4, 5)
+        assert np.linalg.norm(polygon - end, axis=1).min() < 12    # at the outline's tip, in px
+
+
+# --- The objects profile ([synthetic_objects]) ---------------------------------------------------
+
+OBJECTS = dict(objects_profile=True, labelled_objects_per_frame=(3, 6), object_size_mm=(2.0, 25.0),
+               edge_fraction=0.25, edge_gap_mm=(0.5, 8.0), leads_off_plate=True)
+
+
+@pytest.mark.parametrize("seed", range(4))
+def test_objects_profile_labels_every_object_with_its_kind(seed):
+    from robot_offline.training.synth import OBJECT_KINDS
+    frame = render_frame(_with(**OBJECTS), np.random.default_rng(seed))
+    assert len(frame.kinds) == len(frame.polygons) == len(frame.bands) == len(frame.leads)
+    known = {"resistor"} | {k for k, _ in OBJECT_KINDS}
+    assert set(frame.kinds) <= known
+    assert any(k != "resistor" for k in frame.kinds)
+    for kind, (names, end), polygon in zip(frame.kinds, frame.bands, frame.polygons):
+        assert Polygon(polygon).is_valid and len(polygon) >= 3
+        if kind == "resistor":
+            assert len(names) in (4, 5) and end is not None
+        else:
+            assert names == [] and end is None             # the band reader skips these
+    shapes = [Polygon(p) for p in frame.polygons]
+    for a, b in itertools.combinations(shapes, 2):
+        assert a.intersection(b).area < 2.0
+
+
+def test_every_object_kind_can_be_drawn_and_labelled():
+    from robot_offline.training.synth import OBJECT_KINDS, ROD_KINDS, _object, _sample_rod
+    st = _with(**OBJECTS)
+    rng = np.random.default_rng(0)
+    for kind, _ in OBJECT_KINDS:
+        if kind in ROD_KINDS:
+            res = _sample_rod(kind, st, rng)
+            assert res.kind == kind and res.bands == [] and Polygon(res.outline()).is_valid
+        else:
+            draw, label, clear = _object(kind, st, rng, (300.0, 300.0), 0.7)
+            assert label.is_valid and label.area > 4 and draw
+            assert clear.buffer(1).contains(label)          # what is kept clear includes the object
+
+
+def test_the_same_object_is_drawn_again_from_the_same_seed():
+    from robot_offline.training.synth import _object
+    st = _with(**OBJECTS)
+    for kind in ("dip8", "blob", "screw", "capacitor_ceramic"):
+        a = _object(kind, st, np.random.default_rng(5), (300.0, 300.0), 1.0)[1]
+        b = _object(kind, st, np.random.default_rng(5), (300.0, 300.0), 1.0)[1]
+        assert a.equals(b)
+
+
+@pytest.mark.parametrize("seed", range(3))
+def test_edge_placement_puts_bodies_and_objects_against_the_plate_edge(seed):
+    st = _with(**{**OBJECTS, "edge_fraction": 1.0})
+    frame = render_frame(st, np.random.default_rng(seed))
+    x0, y0, x1, y1 = st.plate
+    assert frame.polygons
+    for p in frame.polygons:
+        gap = min(p[:, 0].min() - x0, x1 - 1 - p[:, 0].max(), p[:, 1].min() - y0, y1 - 1 - p[:, 1].max())
+        assert -1.0 <= gap <= 8.0 * st.px_per_mm + 1.0
+
+
+def test_leads_may_run_off_the_plate_but_bodies_stay_on_it():
+    from robot_offline.training.synth import _plate_shape
+    st = _with(**{**OBJECTS, "edge_fraction": 1.0})
+    plate = _plate_shape(st)
+    off = 0
+    for seed in range(4):
+        bodies, polys = _place_bodies(st, np.random.default_rng(seed))
+        for body, poly in zip(bodies, polys):
+            assert plate.contains(poly)
+            off += any(not plate.contains(LineString(p)) for p, _, _ in body.leads)
+    assert off > 0
+
+
+def test_back_of_the_plate_is_darker_with_back_dark():
+    st = _with(bodies_per_frame=(0, 0), distractors_per_frame=(0, 0), objects_fraction=0.0, empty_fraction=1.0)
+    plain = render_frame(st, np.random.default_rng(1)).image.astype(float).mean(2)
+    dark = render_frame(_with(**{**st.__dict__, "back_dark": (0.3, 0.3)}), np.random.default_rng(1)).image.astype(float).mean(2)
+    # The camera is off to the left: the plate's right side is the back.
+    near, far = (slice(100, 500), slice(70, 120)), (slice(100, 500), slice(480, 530))
+    ratio_near = dark[near].mean() / plain[near].mean()
+    ratio_far = dark[far].mean() / plain[far].mean()
+    assert ratio_far < ratio_near - 0.15
+
+
+def test_instances_carry_kind_leads_and_order_only_in_the_objects_profile():
+    from robot_offline.training.synth import instances_json
+    plain = instances_json(render_frame(_with(), np.random.default_rng(2)))
+    assert plain and all("kind" not in i and "leads" not in i for i in plain)
+    assert all(len(i["bands"]) in (4, 5) and len(i["first_end"]) == 2 for i in plain)
+    objects = instances_json(render_frame(_with(**OBJECTS), np.random.default_rng(2)))
+    assert all("kind" in i for i in objects)
+    for inst in objects:
+        if inst["kind"] == "resistor":
+            assert inst["bands"] and "first_end" in inst and len(inst["leads"]) == 2 and "z" in inst
+        else:
+            assert inst["bands"] == [] and "first_end" not in inst
+    assert len({i["z"] for i in objects if "z" in i}) == sum("z" in i for i in objects)
+
+
+def test_objects_profile_comes_from_the_config():
+    st = Settings.from_config(config.load("dataset"), "objects")
+    assert st.objects_profile and st.leads_off_plate and st.labelled_objects_per_frame[1] > 0
+    plain = Settings.from_config(config.load("dataset"))
+    assert not plain.objects_profile and plain.labelled_objects_per_frame == (0, 0) and plain.edge_fraction == 0
+    with pytest.raises(config.ConfigError):
+        Settings.from_config(config.load("dataset"), "nonesuch")

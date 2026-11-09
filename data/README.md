@@ -38,17 +38,18 @@ normalised), matching the robot repo's `outline_px`.
 ```json
 {
   "version": 1,
-  "rules_version": 1,
+  "rules_version": 2,
   "samples": [
     {
       "image": "captures/2026-10-14_a/0001.png",
       "session": "2026-10-14_a",
       "source": "real",
+      "labelled": "objects",
       "width": 4608,
       "height": 2592,
       "instances": [
         {"polygon": [[1203.0, 840.5], [1265.0, 838.0], [1266.5, 862.0], [1204.0, 864.5]],
-         "label_source": "auto"}
+         "label_source": "auto", "kind": "resistor"}
       ]
     }
   ]
@@ -56,6 +57,12 @@ normalised), matching the robot repo's `outline_px`.
 ```
 
 - `source`: `real` or `synthetic`.
+- `labelled`: `objects` (every object outlined) or `resistors` (only resistor bodies; other objects
+  may be in the frame unlabelled). See `docs/labelling.md`. Every frame from before rules version 2 is
+  `resistors`.
 - `label_source`: `auto` (from `autolabel`, unchanged), `manual` (drawn or fixed by hand),
   `synthetic` (exact, from `synth`).
+- `kind` (optional): what the object is: `resistor`, `diode`, `capacitor_axial`, `dip8`, `screw`, ...
+  Missing means a resistor. Synthetic resistors also carry `bands` and `first_end`, for the band
+  reader. Objects-profile frames also carry `leads` (paths) and `z` (drawing order, later on top).
 - Splits are not stored here. `configs/dataset.toml` assigns whole sessions to val and test.
