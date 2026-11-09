@@ -4,10 +4,19 @@ Opens the camera with configs/camera.toml, finds the plate, and a few times a se
 newest frame, white-balances it with the plate brought to the brightness it has in training,
 masks it to the plate (exactly what the model saw in training), runs the model and maps each
 predicted outline back into the camera's view, where it is drawn over the resistor with its spine
-and centroid (skeleton.py) in white. The plate is found again every REFIND_SECONDS in the
-background (live_plate.Fitter), so a nudged camera doesn't
+and centroid (skeleton.py) in white. The plate is found again every few seconds in the
+background (plate_search.Tracker), so a nudged camera doesn't
 spoil it and the picture doesn't wait for it. The exposure follows the light, metered on the
 plate's white top (exposure.py); E turns that off, back to the fixed exposure in camera.toml.
+
+Detections are held steady from run to run (steady.py): a body shows once it passes the threshold in 2
+of the last 5 runs and stays while its mean score holds, so one whose score swings round the threshold
+doesn't flicker; its score shown is that mean. H shows single runs instead, to compare.
+
+Each body's value is read from its bands (post/bands/learned.py, --reader), averaged over its last few
+runs: "4k7 0.99" is a reading, "? 1k 0.50" a best guess below the reader's limit, which the robot would
+measure instead. With values on, the exposure keeps the plate at the reading level (grey 205 to 225),
+where the bands read best; B turns values off, and the exposure goes back to the model's band.
 
 On the right, one tile per detected body shows only its segmented pixels: taken from the top-down
 image (the same 10 px/mm for every body, free of the camera's angle), turned so the body lies
@@ -17,11 +26,12 @@ from end to end (white) and the centroid (white dot), labelled with the body's l
 yaw along its spine and its centroid in scene mm on the plate. K hides and shows all of these.
 
     python -m robot_offline.inf.live_detect
-    python -m robot_offline.inf.live_detect --weights models/synth_only_v1/best.pt --fps 3 --conf 0.5
+    python -m robot_offline.inf.live_detect --weights models/seg_grey_v2/best.pt --fps 3 --conf 0.5
 
 Keys:  q / Esc  quit      v  camera view / top-down view      m  top-down: what the model sees (masked)
        + / -  confidence threshold up / down      c  find the plate again      s  save the shown image
        e  exposure following the light, or fixed      k  skeleton, spine and centroid shown or hidden
+       h  detections held steady over runs, or each run on its own      b  band values on or off
 """
 
 import argparse
@@ -34,15 +44,14 @@ import numpy as np
 
 from robot_offline import config
 from robot_offline.inf import tiling
+from robot_offline.inf.steady import FLOOR, Steady
 from robot_offline.post import skeleton
-from robot_offline.pre import rectify
+from robot_offline.post.bands import crops, learned
+from robot_offline.pre import plate_search, rectify
 from robot_offline.pre.camera import label, open_camera, show
-from robot_offline.pre.exposure import ExposureControl
-from robot_offline.pre.live_plate import Fitter
 
 WINDOW = "robot_offline live detection"
 CAMERA_SCALE = 0.4          # the camera view is shown at this share of 4608 × 2592
-REFIND_SECONDS = 5.0
 COLOURS = ((0, 0, 255), (0, 200, 255), (255, 0, 255), (0, 255, 0), (255, 128, 0), (255, 200, 80))
 TILE = (340, 150)           # px, each body's cut-out tile
 ZOOM = 4.0                  # cut-outs are shown this much larger than the 10 px/mm top-down image
@@ -55,9 +64,10 @@ def _text(img, text, org, colour, scale=0.5):
     cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, colour, 1, cv2.LINE_AA)
 
 
-def draw(img, polygons, scores, scale=1.0, axes=()):
+def draw(img, polygons, scores, scale=1.0, axes=(), notes=()):
     """Numbered outlines, a light fill and the confidence on img (BGR), in place. Polygons in
-    img px / scale. axes: (spine, centroid) per body, in the same px, drawn as a line and a dot."""
+    img px / scale. axes: (spine, centroid) per body, in the same px, drawn as a line and a dot.
+    notes: text after each body's confidence (its value)."""
     fill = img.copy()
     for i, poly in enumerate(polygons):
         cv2.fillPoly(fill, [np.round(poly * scale).astype(np.int32)], COLOURS[i % len(COLOURS)], cv2.LINE_AA)
@@ -67,7 +77,8 @@ def draw(img, polygons, scores, scale=1.0, axes=()):
         colour = COLOURS[i % len(COLOURS)]
         cv2.polylines(img, [pts], True, colour, 2, cv2.LINE_AA)
         x, y = pts.min(0)
-        _text(img, f"#{i + 1} {score:.2f}", (int(x), int(y) - 4), colour)
+        note = f"   {notes[i]}" if i < len(notes) and notes[i] else ""
+        _text(img, f"#{i + 1} {score:.2f}{note}", (int(x), int(y) - 4), colour)
     for spine, centroid in axes:
         cv2.polylines(img, [np.round(spine * scale * 16).astype(np.int32)], False, (255, 255, 255), 1, cv2.LINE_AA, 4)
         cv2.circle(img, tuple(int(v) for v in np.round(centroid * scale * 16)), 3 * 16, (255, 255, 255), -1,
@@ -130,12 +141,31 @@ def cutout_panel(image, polygons, scores, height, bodies=(), settings=None):
     return panel
 
 
+def read_values(net, views, frame, cal, plain, polygons, ids=None):
+    """Each body's value as text, read as tools.read_plate reads it. ids: the bodies' ids (steady.Steady), to
+    average each one's reading over its recent runs; None reads this run alone."""
+    _, gains = rectify.white_balance(plain, cal.settings)          # crops keep the frame's own level
+    balanced = np.clip(plain.astype(np.float32) * gains, 0, 255).astype(np.uint8)
+    white = float(np.percentile(cv2.cvtColor(balanced, cv2.COLOR_BGR2GRAY)[150:1050, 150:1050], 70))
+    notes = []
+    for i, poly in enumerate(polygons):
+        lp = learned.log_probs(net, crops.cut(frame, cal, poly, gains).image, white)
+        r = views.add(ids[i], lp) if ids is not None else learned.decode(lp)
+        notes.append(f"{learned.ohms_text(r.value)} {r.confidence:.2f}" if r.value is not None
+                     else f"? {learned.ohms_text(r.best)} {r.confidence:.2f}")
+    if ids is not None:
+        views.keep_only(ids)
+    return notes
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="python -m robot_offline.inf.live_detect",
                                      description="Run the model live on the camera and draw the body outlines.")
-    parser.add_argument("--weights", type=Path, default=config.ROOT / "models" / "synth_only_v1" / "best.pt")
+    parser.add_argument("--weights", type=Path, default=config.ROOT / "models" / "seg_grey_v2" / "best.pt")
     parser.add_argument("--fps", type=float, default=3.0, help="detections per second (3)")
     parser.add_argument("--conf", type=float, default=0.5, help="confidence threshold (0.5)")
+    parser.add_argument("--reader", type=Path, default=config.ROOT / "runs" / "band_reader_final" / "band_reader.pt",
+                        help="band reader weights (values aren't shown if missing)")
     args = parser.parse_args(argv)
     if not args.weights.exists():
         parser.error(f"no weights at {args.weights}; train first, e.g. python -m robot_offline.training.train_synth")
@@ -150,50 +180,59 @@ def main(argv=None):
     work_area = (area["x0"], area["y0"], area["width"], area["height"])
     print(f"Loading {args.weights} ...")
     model = YOLO(str(args.weights))
+    grey = tiling.wants_grey(args.weights)
     print("Opening the camera (a few seconds while exposure and white balance settle)...")
     camera = config.load("camera")
     cap = open_camera(camera)
     fixed = camera["camera"]["exposure"], camera["camera"]["gain"]
-    control = ExposureControl(camera["exposure_control"], *fixed, cap)
     print(__doc__.split("Keys:", 1)[1].rstrip())
-    fitter = Fitter(settings, interval=REFIND_SECONDS)     # a hand over an edge: it keeps the last calibration
-    fitter.start()
+    net = learned.load(args.reader) if args.reader.exists() else None
+    if net is None:
+        print(f"No band reader at {args.reader}: no values")
+    values, views = net is not None, learned.Views()
+    fitter = plate_search.Tracker(cap, settings, camera=camera,      # a hand over an edge: it keeps the last fit
+                                  level=learned.READING_LEVEL if values else None)
 
     cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
-    top_down, masked, conf, follow, skeletons = False, False, args.conf, True, True
-    polygons, scores, view, shown = [], [], None, None
+    top_down, masked, conf, skeletons, hold = False, False, args.conf, True, True
+    steady = Steady(conf)
+    polygons, scores, notes, view, shown = [], [], [], None, None
     next_run, latency, post, n_runs, t_start = 0.0, 0.0, 0.0, 0, time.perf_counter()
     while True:
         ok, frame = cap.read()                             # keep reading so the newest frame is used
         if not ok:
             continue
-        fitter.frame = frame
-        cal = fitter.cal
-        if follow:
-            control.meter(frame, cal)
+        cal = fitter.update(frame)
         now = time.perf_counter()
 
         if now >= next_run:
             next_run = now + 1.0 / args.fps
             t0 = time.perf_counter()
             if cal is not None:
-                model_view, rect = rectify.model_input(frame, cal)
+                plain = rectify.rectify(frame, cal)
+                model_view, rect = rectify.model_input(frame, cal, plain)
                 tiles = tiling.tiles(work_area, (model_view.shape[1], model_view.shape[0]),
                                      tiles_cfg["size"], tiles_cfg["overlap"])
-                polygons, scores = tiling.predict_frame(model, model_view, tiles, conf=conf)
+                polygons, scores = tiling.predict_frame(model, model_view, tiles, conf=FLOOR, grey=grey)
+                held = steady.update(polygons, scores)         # followed always, so h switches cleanly
+                if hold:
+                    polygons, scores = held
+                else:
+                    polygons, scores = [p for p, c in zip(polygons, scores) if c >= conf], [c for c in scores if c >= conf]
+                notes = read_values(net, views, frame, cal, plain, polygons, steady.ids if hold else None) if values else []
                 t1 = time.perf_counter()
                 bodies = [skeleton.body_skeleton(p) for p in polygons] if skeletons else []
                 post = time.perf_counter() - t1
                 axes = [(b.spine, b.centroid) for b in bodies if b is not None]
                 if top_down:
                     view = (model_view if masked else rectify.draw_grid(rect, cal.settings)).copy()
-                    draw(view, polygons, scores, axes=axes)
+                    draw(view, polygons, scores, axes=axes, notes=notes)
                 else:
                     view = cv2.resize(frame, None, fx=CAMERA_SCALE, fy=CAMERA_SCALE, interpolation=cv2.INTER_AREA)
                     cv2.polylines(view, [np.round(rectify.plate_outline_px(cal) * CAMERA_SCALE).astype(np.int32)],
                                   True, (255, 255, 255), 1, cv2.LINE_AA)
                     draw(view, [rectify.to_full(p, cal) for p in polygons], scores, CAMERA_SCALE,
-                         [(rectify.to_full(s, cal), rectify.to_full(c, cal)[0]) for s, c in axes])
+                         [(rectify.to_full(s, cal), rectify.to_full(c, cal)[0]) for s, c in axes], notes)
                 view = np.hstack([view, cutout_panel(rect, polygons, scores, view.shape[0], bodies, cal.settings)])
             else:
                 view = cv2.resize(frame, None, fx=CAMERA_SCALE, fy=CAMERA_SCALE, interpolation=cv2.INTER_AREA)
@@ -202,18 +241,14 @@ def main(argv=None):
             n_runs += 1
             rate = n_runs / max(time.perf_counter() - t_start, 1e-6)
             mode = ("top-down, as the model sees it" if masked else "top-down") if top_down else "camera view"
-            if cal is None:
-                plate = f"looking for the plate: {fitter.error}" if fitter.error else "looking for the plate"
-            else:
-                plate = f"plate: near side by the {cal.fit['near_side_by']}"
-                if fitter.error:
-                    plate += " (not found in the latest frame: kept the last fit)"
-            exposure = control.status() if follow else f"exposure fixed at {fixed[0]}, gain {fixed[1]}"
+            plate = fitter.status()
+            exposure = fitter.control.status() if fitter.follow else f"exposure fixed at {fixed[0]}, gain {fixed[1]}"
             shape = f"skeletons {post * 1000:.0f} ms" if skeletons else "skeletons off"
-            label(view, [f"{len(polygons)} resistor bodies   conf >= {conf:.2f}   {mode}",
+            label(view, [f"{len(polygons)} resistor bodies   conf >= {conf:.2f} "
+                         f"({'held over runs' if hold else 'each run alone'})   {mode}",
                          f"{rate:.1f} detections/s, {latency * 1000:.0f} ms each ({shape})   {plate}", exposure,
                          "q quit  v view  m model's input  +/- confidence  c find plate  e exposure  "
-                         "k skeletons  s save"])
+                         "k skeletons  h hold  b values  s save"])
             shown = show(view, shown, WINDOW)
 
         key = cv2.waitKey(1) & 0xFF
@@ -225,18 +260,25 @@ def main(argv=None):
             masked, top_down, next_run = not masked, True, 0.0
         elif key in (ord("+"), ord("=")):
             conf, next_run = min(0.95, conf + 0.05), 0.0
+            steady.conf = conf
         elif key in (ord("-"), ord("_")):
             conf, next_run = max(0.05, conf - 0.05), 0.0
+            steady.conf = conf
         elif key == ord("c"):
-            fitter.restart = True
+            fitter.restart()
+            steady.clear()
+        elif key == ord("h"):
+            hold, next_run = not hold, 0.0
+        elif key == ord("b") and net is not None:
+            values, next_run = not values, 0.0
+            fitter.level = learned.READING_LEVEL if values else None
         elif key == ord("k"):
             skeletons, next_run = not skeletons, 0.0
         elif key == ord("e"):
-            follow = not follow
-            if not follow:
+            fitter.follow = not fitter.follow
+            if not fitter.follow:
                 cap.set(cv2.CAP_PROP_EXPOSURE, fixed[0])
                 cap.set(cv2.CAP_PROP_GAIN, fixed[1])
-                control = ExposureControl(camera["exposure_control"], *fixed, cap)
         elif key == ord("s") and view is not None:
             out = config.DATA_DIR / "live"
             out.mkdir(parents=True, exist_ok=True)
@@ -244,7 +286,7 @@ def main(argv=None):
             cv2.imwrite(str(path), view)
             print(f"Saved {path}")
 
-    fitter.stop = True
+    fitter.close()
     cap.release()
     cv2.destroyAllWindows()
 

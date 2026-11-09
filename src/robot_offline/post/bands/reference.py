@@ -25,9 +25,9 @@ import numpy as np
 
 from robot_offline import config
 from robot_offline.inf import tiling
-from robot_offline.pre import rectify
+from robot_offline.pre import plate_search, rectify
 
-DEFAULT_WEIGHTS = config.ROOT / "models" / "synth_only_v1" / "best.pt"
+DEFAULT_WEIGHTS = config.ROOT / "models" / "seg_grey_v2" / "best.pt"
 PREVIEW_SCALE = 0.6         # of the live detection view's size
 
 
@@ -36,15 +36,16 @@ def load_index(folder):
     return json.loads(path.read_text()) if path.exists() else []
 
 
-def find_bodies(frame, cal, model, conf=0.5):
+def find_bodies(frame, cal, model, conf=0.5, grey=False):
     """(rectified image, white-balance gains, polygons in rectified px, scores) for a raw frame."""
     ds = config.load("dataset")
     area, tc = ds["work_area"], ds["tiles"]
-    rect, gains = rectify.white_balance(rectify.rectify(frame, cal), cal.settings)
-    view = rectify.mask_outside_plate(rect, cal.settings)
+    plain = rectify.rectify(frame, cal)
+    rect, gains = rectify.white_balance(plain, cal.settings)
+    view, _ = rectify.model_input(frame, cal, plain)
     tiles = tiling.tiles((area["x0"], area["y0"], area["width"], area["height"]), (view.shape[1], view.shape[0]),
                          tc["size"], tc["overlap"])
-    polygons, scores = tiling.predict_frame(model, view, tiles, conf=conf)
+    polygons, scores = tiling.predict_frame(model, view, tiles, conf=conf, grey=grey)
     return rect, gains, polygons, scores
 
 
@@ -79,7 +80,8 @@ def save(folder, frame, cal, value_ohm, rect, polygons, scores, sides=()):
 
 def _calibration(frame, folder):
     try:
-        return rectify.calibrate(frame, rectify.Settings.from_config())
+        cal = plate_search.find(frame)
+        return cal, [cal.fit["edges"][n] for n in ("top", "right", "bottom", "left")]
     except rectify.PlateNotFound:
         previous = sorted(folder.glob("*_rectify.json"))
         if not previous:
@@ -100,7 +102,7 @@ def capture(value_ohm, folder, weights=DEFAULT_WEIGHTS, conf=0.5):
     if not ok:
         raise SystemExit("no frame from the camera")
     cal, sides = _calibration(frame, folder)
-    rect, _, polygons, scores = find_bodies(frame, cal, YOLO(str(weights)), conf)
+    rect, _, polygons, scores = find_bodies(frame, cal, YOLO(str(weights)), conf, tiling.wants_grey(weights))
     return save(folder, frame, cal, value_ohm, rect, polygons, scores, sides)
 
 

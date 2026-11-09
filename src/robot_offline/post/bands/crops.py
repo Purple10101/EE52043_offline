@@ -109,7 +109,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog="python -m robot_offline.post.bands.crops",
                                      description="Cut straightened body crops from captured sessions.")
     parser.add_argument("--sessions", nargs="+", required=True)
-    parser.add_argument("--weights", type=Path, default=config.ROOT / "models" / "synth_only_v1" / "best.pt")
+    parser.add_argument("--weights", type=Path, default=config.ROOT / "models" / "seg_grey_v2" / "best.pt")
     parser.add_argument("--conf", type=float, default=0.5)
     parser.add_argument("--out", type=Path, default=config.DATA_DIR / "bands")
     args = parser.parse_args(argv)
@@ -118,6 +118,7 @@ def main(argv=None):
     area, tiles_cfg = ds["work_area"], ds["tiles"]
     work_area = (area["x0"], area["y0"], area["width"], area["height"])
     model = YOLO(str(args.weights))
+    grey = tiling.wants_grey(args.weights)
     crops_dir = args.out / "crops"
     crops_dir.mkdir(parents=True, exist_ok=True)
     index_path = args.out / "crops.json"
@@ -130,10 +131,11 @@ def main(argv=None):
         for frame_entry in session.frames:
             raw = cv2.imread(str(session.dir / frame_entry["file"]))
             cal = session.frame_cal(frame_entry)
-            rect, gains = rectify.white_balance(rectify.rectify(raw, cal), cal.settings)
-            view = rectify.mask_outside_plate(rect, cal.settings)
+            plain = rectify.rectify(raw, cal)
+            _, gains = rectify.white_balance(plain, cal.settings)   # crops keep the frame's own level
+            view, _ = rectify.model_input(raw, cal, plain)
             tiles = tiling.tiles(work_area, (view.shape[1], view.shape[0]), tiles_cfg["size"], tiles_cfg["overlap"])
-            polygons, scores = tiling.predict_frame(model, view, tiles, conf=args.conf)
+            polygons, scores = tiling.predict_frame(model, view, tiles, conf=args.conf, grey=grey)
             stem = f"{name}_{Path(frame_entry['file']).stem}"
             for n, (poly, score) in enumerate(zip(polygons, scores), start=1):
                 crop = cut(raw, cal, poly, gains)
