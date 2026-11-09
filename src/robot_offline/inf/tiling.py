@@ -10,7 +10,9 @@ widened by a small margin and the few resulting duplicates are removed by overla
 whose centre sits on a core boundary is neither lost nor kept twice.
 """
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -106,12 +108,20 @@ def merge(tile_predictions):
     return [p for _, p, _ in out], [s for s, _, _ in out]
 
 
-def predict_frame(model, image, frame_tiles, conf=0.25, epsilon_px=1.0, batch=4, **kwargs):
+def wants_grey(weights):
+    """Whether these weights were trained on greyscale frames, from the handoff.json beside them."""
+    handoff = Path(weights).with_name("handoff.json")
+    return handoff.exists() and json.loads(handoff.read_text()).get("input") == "grey"
+
+
+def predict_frame(model, image, frame_tiles, conf=0.25, epsilon_px=1.0, batch=4, grey=False, **kwargs):
     """Runs an ultralytics segmentation model over the tiles of a full frame and merges the results.
 
-    image is a full BGR frame. Extra keyword arguments go to model.predict.
-    Returns (polygons in full-frame px, scores).
+    image is a full BGR frame; grey: give the model it in greyscale (see wants_grey). Extra keyword
+    arguments go to model.predict. Returns (polygons in full-frame px, scores).
     """
+    if grey:
+        image = cv2.cvtColor(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY), cv2.COLOR_GRAY2BGR)
     per_tile = []
     for i in range(0, len(frame_tiles), batch):
         group = frame_tiles[i:i + batch]

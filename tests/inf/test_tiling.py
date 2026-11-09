@@ -77,3 +77,12 @@ def test_mask_to_polygon_follows_the_blob():
     xmin, ymin = points.min(axis=0)
     xmax, ymax = points.max(axis=0)
     assert (xmin, ymin, xmax, ymax) == (30, 20, 79, 39)
+
+
+def test_a_model_wants_grey_only_if_its_handoff_says_so(tmp_path):
+    weights = tmp_path / "best.pt"
+    assert not tiling.wants_grey(weights)
+    (tmp_path / "handoff.json").write_text('{"input": "grey"}')
+    assert tiling.wants_grey(weights)
+    (tmp_path / "handoff.json").write_text('{"tile_size": 1024}')
+    assert not tiling.wants_grey(weights)
