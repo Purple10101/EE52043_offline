@@ -97,6 +97,10 @@ never touched.
       [docs/classification.md](docs/classification.md)):
       - `bands.crops` - straightened, white-balanced body crops cut from the raw camera frame at
         20 px/mm, and the crop dataset in `data/bands/`.
+      - `bands.grouping` - groups bodies that look the same, without reading a value
+        (`python -m robot_offline.post.bands.grouping`), into `data/bands/groups.json` with a sheet
+        per group.
+      - `bands.value` - the rule-based value reader; `bands.learned` - the learned one.
       - `bands.reference` - captures frames of resistors of one known value
         (`python -m robot_offline.post.bands.reference 4k7`) into `data/reference/<date>/`, with
         the bodies found and a preview of each.
@@ -116,6 +120,7 @@ never touched.
     - `cutouts` - builds the resistor cut-out library from spread-out scenes.
     - `export_yolo` - manifest to a YOLO-seg dataset of tiles plus `dataset.yaml`.
     - `train` - fine-tunes a COCO-pretrained YOLO-seg model.
+    - `band_reader` - trains the learned band reader, on the CPU.
     - `train_synth` - trains on synthetic sets only (one set for training, another for
       validation), then draws the model's predictions on the real rectified frames for a look.
     - `notebooks/` - experiments; `synth_performance_evaluation.ipynb` trains on the synthetic set
@@ -154,16 +159,30 @@ and nothing else using it, the whole plate in view, its front face included, and
 python -m robot_offline.pre.live_plate
 ```
 
-The camera takes a few seconds to settle. Then the plate is found from scratch (about 1.5 s) and,
-from then on, fitted again to the newest frame over and over in the background (about 0.5 s each),
-so the picture keeps running while it works.
+The camera takes a few seconds to settle. Then the plate is found, in about 5 s, and from then on
+fitted again to the newest frame over and over in the background, so the picture keeps running while
+it works. Every tool in this repo and in the robot repo finds the plate the same way, with
+`pre/plate_search.py` (`Tracker` on a live camera, `find_now` in a script, `find` for a saved frame);
+settings in `configs/camera.toml [plate_search]`:
 
-The exposure follows the light: it is metered on the plate's white top (once found; before that on
-the brightest part of the frame) and stepped to keep the plate between grey 165 and 235, about
-where the training frames have it, whatever the room does. Gain is only added once the exposure is
-at its longest (1/16 s: the camera can't expose longer at its frame rate), since gain adds noise.
-From a dark room it takes about 5 s to settle. Settings are in
-`configs/camera.toml [exposure_control]`; `e` switches back to the fixed exposure to compare.
+- **Where it looks.** Where any tool last found the plate (`data/plate/last_rectify.json`), else the
+  rig's own place in the frame (`rig_corners_px`): the tower and plate are one rig, so the plate stays
+  near there wherever the rig is set up. Then outlines from the frame's long straight lines, then the
+  frame's brightest region.
+- **How bright.** The plate is looked for dim (grey 60 to 140, `search_level`), metered where it is
+  expected. The camera squeezes the brights, so a bright plate barely stands out from a pale bench: on
+  the lab's white bench, with the plate at 183 the bench behind its far edge read 135, with it at 78 it
+  read 36. Over every raw frame there was, the fit found the plate in 37 of 38 with the plate below
+  about 170. If it still isn't found it tries every exposure in turn.
+- **Then for the model.** Once found, the exposure brings the plate to grey 165 to 235, about where
+  the training frames have it, and follows the light from there. Gain is only added at the longest
+  exposure, or where a whole exposure step would overshoot. Settings in
+  `configs/camera.toml [exposure_control]`; `e` switches back to the fixed exposure to compare.
+
+On a pale bench the edge with the bench behind it may still not show; the fit then does without it and
+fixes the plate by the crosshair instead, so the crosshair must be clear, and the status names the
+hidden edge. The refits at the model's exposure can fail there too: the status then says the fit is
+held, which is fine while nothing moves; `c` looks again, dim.
 
 **3. Check it.** On the left, the camera's view of the plate with its model drawn where the fit
 puts it. Each line should sit on the real edge:
@@ -197,7 +216,8 @@ The text at the top says:
 **If something is wrong:**
 
 - *"plate not found"* or `NOT FOUND`: keep hands and leads off the plate's edges, and the crosshair or
-  the bottom of its front face in view. A lamp low on one side can hide an edge in shadow.
+  the bottom of its front face in view. A lamp low on one side can hide an edge in shadow. With a pale
+  bench behind an edge, the crosshair must be clear (see above), or lay a matte black card along that edge.
 - The lines sit off the real edges: press `c` to start again. If they still do, save a frame with
   `s` and look at the plate settings in `configs/dataset.toml [rectify]` (the plate's model).
 
@@ -216,7 +236,7 @@ git lfs install
 git lfs pull
 ```
 
-`models/synth_only_v1/best.pt` should now be about 52 MB. If it is a few hundred bytes, it is still
+`models/seg_grey_v2/best.pt` should now be about 52 MB. If it is a few hundred bytes, it is still
 the LFS pointer: run `git lfs pull` again.
 
 **2. Set up the rig.**
@@ -246,7 +266,7 @@ detections.
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--weights` | `models/synth_only_v1/best.pt` | The model to run, e.g. `runs/<name>/weights/best.pt` after training your own. |
+| `--weights` | `models/seg_grey_v2/best.pt` | The model to run, e.g. `runs/<name>/weights/best.pt` after training your own. Greyscale if its `handoff.json` says `"input": "grey"`. |
 | `--fps` | `3` | Detections per second. |
 | `--conf` | `0.5` | Confidence threshold. Below about 0.3 the plate's rim starts to show up as false bodies. |
 
