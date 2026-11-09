@@ -1,6 +1,10 @@
 # Next segmentation model: what it learns, and why (design record, 2026-11-09)
 
-**Status:** the synthetic data generator is built, and samples are below. Not yet trained. This records what the next model is meant to learn that
+**Status:** the synthetic data generator is built, and samples are below. The training set is generated:
+`synth_obj_v1` (1,200 frames, 10,993 objects) and `synth_obj_v1_val` (150 frames, 1,377 objects). Not
+yet trained: waiting for the GPU. The command will be
+`python -m robot_offline.training.train_synth --train synth_obj_v1 --val synth_obj_v1_val --name seg_objects_v1 --grey --epochs 40 --patience 12`,
+the same settings as `seg_grey_v2`. This records what the next model is meant to learn that
 `seg_grey_v2` did not, the evidence behind each change, and how the result will be judged. When it is
 trained, its results go in a new experiment folder and are compared against the tests below.
 Working name: `seg_objects_v1`.
