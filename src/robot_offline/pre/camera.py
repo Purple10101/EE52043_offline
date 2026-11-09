@@ -5,7 +5,7 @@ import cv2
 import numpy as np
 
 from robot_offline import config
-from robot_offline.pre import rectify
+from robot_offline.pre import plate_search, rectify
 
 MAX_INDEX = 6               # DirectShow indices tried when looking for the camera
 RETRY_FRAMES = 20           # while the plate isn't found for the live view, look again this often
@@ -70,14 +70,13 @@ def label(img, lines):
     return img
 
 
-def find_plate(frame, settings):
-    """(Calibration or None, status text) for a frame."""
+def find_plate(frame, settings, last=None):
+    """(Calibration or None, status text) for a frame already taken: plate_search.find, with its status."""
     try:
-        cal, sides = rectify.calibrate(frame, settings)
+        cal = plate_search.find(frame, settings, last)
     except rectify.PlateNotFound as e:
         return None, f"plate not found: {e}"
-    worst = min(share for share, _ in sides)
-    return cal, f"plate found (near side by the {cal.fit['near_side_by']}; {worst:.0%} of the worst edge found)"
+    return cal, plate_search.describe(cal)
 
 
 def view_of(frame, cal, raw, grid):

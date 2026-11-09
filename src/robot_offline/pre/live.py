@@ -20,8 +20,8 @@ from pathlib import Path
 import cv2
 
 from robot_offline import config
-from robot_offline.pre import rectify
-from robot_offline.pre.camera import RETRY_FRAMES, find_plate, label, open_camera, show, view_of
+from robot_offline.pre import plate_search, rectify
+from robot_offline.pre.camera import label, open_camera, show, view_of
 
 WINDOW = "robot_offline live"
 
@@ -35,27 +35,19 @@ def main(argv=None):
 
     print("Opening the camera (a few seconds while exposure and white balance settle)...")
     cap = open_camera()
-    ok, frame = cap.read()
-    if not ok:
-        raise SystemExit("the camera gave no frame")
-
-    if args.calibration:
-        cal, status = rectify.Calibration.load(args.calibration), f"calibration: {Path(args.calibration).name}"
-    else:
-        cal, status = find_plate(frame, rectify.Settings.from_config())
-    print(status)
+    given = rectify.Calibration.load(args.calibration) if args.calibration else None
+    tracker = plate_search.Tracker(cap, cal=given, locked=given is not None)
     print(__doc__.split("Keys:", 1)[1].rstrip())
 
     cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
     show_grid, show_raw, shown_size = True, False, None
-    times, count = [], 0
+    times = []
     while True:
         ok, frame = cap.read()
         if not ok:
             continue
-        count += 1
-        if cal is None and count % RETRY_FRAMES == 0:
-            cal, status = find_plate(frame, rectify.Settings.from_config())
+        cal = tracker.update(frame)
+        status = f"calibration: {Path(args.calibration).name}" if given is not None else tracker.status()
         times = (times + [time.perf_counter()])[-10:]
         fps = (len(times) - 1) / (times[-1] - times[0]) if len(times) > 1 else 0.0
 
@@ -76,9 +68,7 @@ def main(argv=None):
         elif key == ord("r"):
             show_raw = not show_raw
         elif key == ord("c"):
-            found, status = find_plate(frame, cal.settings if cal else rectify.Settings.from_config())
-            cal = found or cal
-            print(status)
+            tracker.restart()
         elif key == ord("s"):
             out = Path(args.save_dir)
             out.mkdir(parents=True, exist_ok=True)
@@ -90,6 +80,7 @@ def main(argv=None):
             status = f"saved {stem.name}"
             print(f"Saved {stem}.png" + (" and _rectified.png" if cal is not None else ""))
 
+    tracker.close()
     cap.release()
     cv2.destroyAllWindows()
 

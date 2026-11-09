@@ -6,7 +6,7 @@ import pytest
 
 from robot_offline.pre import rectify
 
-from conftest import camera_position
+from conftest import PALE_BENCH, camera_position
 
 # The configured plate: the test frames are drawn from it (conftest.render_plate), crosshair included.
 SETTINGS = rectify.Settings.from_config()
@@ -106,6 +106,29 @@ def test_the_plate_is_found_near_its_last_corners_after_a_move(moved_plate, plat
     assert np.abs(corners - truth).max() < CORNER_PX
 
 
+def test_a_pale_bench_behind_the_far_edge_is_made_up_for_by_the_crosshair(render, plate_corners):
+    frame, truth = render(far_bench=PALE_BENCH)
+    for start in (plate_corners, plate_corners + (15, 30)):               # where it was last, or near it
+        fit = rectify.find_plate(frame, SETTINGS, start=start)
+        assert fit.summary["missing_edge"] == "top" and fit.near_by == "crosshair"
+        found = rectify.plate_outline_px(rectify._calibration(fit, FRAME, SETTINGS))
+        assert np.abs(found - truth).max() < 2 * CORNER_PX
+        assert all(abs(v) < 0.3 for v in fit.checks.values())          # mm: the face agrees
+
+
+def test_an_edge_the_bench_hides_part_of_is_made_up_for_too(render, plate_corners):
+    frame, truth = render(far_bench=PALE_BENCH, far_bench_y=(-230, -125))   # enough for the first search only
+    fit = rectify.find_plate(frame, SETTINGS, start=plate_corners)
+    assert fit.summary["missing_edge"] == "top" and fit.near_by == "crosshair"
+    assert np.abs(rectify.plate_outline_px(rectify._calibration(fit, FRAME, SETTINGS)) - truth).max() < 2 * CORNER_PX
+
+
+def test_a_pale_bench_and_a_covered_crosshair_leave_nothing_to_fit(render, plate_corners):
+    frame, _ = render(far_bench=PALE_BENCH, cover_cross=True)
+    with pytest.raises(rectify.PlateNotFound, match="crosshair"):
+        rectify.find_plate(frame, SETTINGS, start=plate_corners)
+
+
 def test_recalibrating_keeps_the_lens_and_follows_the_camera(plate_frame, moved_plate):
     cal, _ = rectify.calibrate(plate_frame, SETTINGS)
     moved, truth = moved_plate(-1.0, 2.0, 1.0)
@@ -181,3 +204,14 @@ def test_a_frame_without_the_plate_is_rejected():
     dark = np.full((FRAME[1], FRAME[0], 3), (60, 110, 150), np.uint8)
     with pytest.raises(rectify.PlateNotFound):
         rectify.find_plate_corners(dark)
+
+
+def test_model_image_brings_a_real_plate_to_the_models_level():
+    st = rectify.Settings.from_config()
+    dim = np.full((*st.size[::-1], 3), 150, np.uint8)
+    sample = {"image": "x.png", "space": "rectified"}
+    real = rectify.model_image({**sample, "source": "real"}, dim, st)
+    drawn = rectify.model_image({**sample, "source": "synthetic"}, dim, st)
+    centre = st.size[1] // 2, st.size[0] // 2
+    assert abs(int(real[centre][0]) - rectify.MODEL_PLATE_LEVEL) <= 2
+    assert drawn[centre][0] == 150

@@ -67,6 +67,25 @@ def test_gain_is_only_used_once_the_exposure_is_at_its_longest():
     assert control.gain == 0
 
 
+def test_a_band_narrower_than_an_exposure_step_is_reached_with_gain():
+    control = exposure.ExposureControl(dict(SETTINGS, max_gain=64), -5, 0)
+    control.aim(205, 225)
+    camera = Camera(light=30.8)         # 183 at -6 and 251 at -5, as on the lab bench on 2026-11-09
+    levels = run(camera, control, 400)
+    assert 205 <= levels[-1] <= 225 and max(levels[-40:]) - min(levels[-40:]) < 1e-9
+    assert control.exposure == -6 and control.gain > 0
+
+
+def test_the_band_can_be_moved_and_back():
+    control = exposure.ExposureControl(SETTINGS, -5, 0)
+    control.aim(60, 140)
+    assert (control.low, control.high) == (60, 140)
+    run(Camera(light=1.0), control, 300)
+    assert 60 <= Camera(light=1.0).level(control)[0] <= 140
+    control.aim()
+    assert (control.low, control.high) == (SETTINGS["low"], SETTINGS["high"])
+
+
 def test_without_gain_too_dim_just_waits_at_the_longest_exposure():
     s = dict(SETTINGS, max_gain=0)
     control = exposure.ExposureControl(s, -5, 0)

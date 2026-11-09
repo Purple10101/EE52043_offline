@@ -12,6 +12,7 @@ TVEC = np.array([-127.539, -22.92, 242.077])
 FOCAL = 3589.6
 K = np.array([[FOCAL, 0.0, FRAME[0] / 2], [0.0, FOCAL, FRAME[1] / 2], [0.0, 0.0, 1.0]])
 WOOD, PLATE, DARK_FACE, GAP, LEG = (60, 110, 150), (200, 200, 200), (45, 45, 45), (15, 15, 15), (185, 185, 185)
+PALE_BENCH = (190, 208, 214)    # the lab bench (2026-11-09): about 1.04 times the plate's grey, and yellower
 
 
 def _project(points_mm, rvec, tvec):
@@ -35,15 +36,20 @@ def _rounded_square(st, steps=8):
     return np.column_stack([np.array(out), np.full(len(out), st.top_z_mm)])
 
 
-def render_plate(rvec=RVEC, tvec=TVEC, face=DARK_FACE, cover_cross=False, seed=0):
+def render_plate(rvec=RVEC, tvec=TVEC, face=DARK_FACE, cover_cross=False, far_bench=None, far_bench_y=(-230, -30),
+                 seed=0):
     """A camera frame of the plate, drawn from its model through a pinhole camera: the plate's top
     with its crosshair groove, its front face (dark by default, or lit), the dark gap under it, the
     legs at its near corners, a screw by a far corner, leads and a resistor body near the edges;
-    then blur and noise. Returns (frame, the top's corners in px, image order)."""
+    then blur and noise. far_bench: a colour for the bench behind the plate's far edge, as the pale
+    lab bench (PALE_BENCH) is, over far_bench_y (scene mm). Returns (frame, the top's corners in px, image order)."""
     st = rectify.Settings.from_config()
     p = lambda pts: _project(pts, rvec, tvec)
     z, zf, zb = st.top_z_mm, st.top_z_mm - st.face_mm, st.top_z_mm - 28.0
     img = np.full((FRAME[1], FRAME[0], 3), WOOD, np.uint8)
+    if far_bench is not None:
+        y0, y1 = far_bench_y
+        _poly(img, p([[45, y0, zb], [140, y0, zb], [140, y1, zb], [45, y1, zb]]), far_bench)
     _poly(img, p([[-50, -178, zf], [-50, -82, zf], [-50, -82, zb], [-50, -178, zb]]), GAP)
     for y0, y1 in ((-180, -172), (-88, -80)):                                # legs, seen from the front
         _poly(img, p([[-50, y0, zf], [-50, y1, zf], [-50, y1, zb], [-50, y0, zb]]), LEG)

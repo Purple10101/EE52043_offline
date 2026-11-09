@@ -2,7 +2,8 @@
 
 The plate's top is white and always in view, so it serves as a grey card: the camera's exposure is
 stepped until the top's brightness sits in a band around a target, whatever the room's light does,
-and only once the exposure is at its longest is gain added (gain adds noise). The camera's own auto
+and gain is added only once the exposure is at its longest, or where a whole exposure step would
+overshoot the band (gain adds noise; a narrow band needs finer steps than the exposure's). The camera's own auto
 exposure meters the whole frame, so a dark bench or a bright sleeve would move the plate's level;
 this only looks at the plate.
 
@@ -29,7 +30,12 @@ GAMMA = 2.2                 # first guess at the tone curve: a step changes the 
 def plate_level(frame, cal):
     """(level, clipped share) of the plate's top in a raw frame: the median grey of the brighter half
     of its middle (resistors and marks left out), and the share of that half that is clipped."""
-    outline = rectify.plate_outline_px(cal)
+    return level_within(frame, rectify.plate_outline_px(cal))
+
+
+def level_within(frame, outline):
+    """plate_level for the plate at outline (4 × 2 raw px): where it is expected, before it is found."""
+    outline = np.asarray(outline, float)
     centre = outline.mean(0)
     inner = centre + METER_SHARE * (outline - centre)
     h, w = frame.shape[:2]
@@ -56,16 +62,28 @@ class ExposureControl:
 
     settings: configs/camera.toml [exposure_control]. exposure, gain: what the camera is set to now.
     cap: the cv2.VideoCapture to set them on, or None (for tests: read .exposure and .gain).
+    The band is settings' low and high until aim() moves it (plate_search aims lower to look for the plate).
     """
 
     def __init__(self, settings, exposure, gain, cap=None):
         self.s = settings
+        self.low, self.high = settings["low"], settings["high"]
         self.exposure, self.gain = float(exposure), float(gain)
         self.cap = cap
         self.ratio = 2 ** (settings["exposure_step"] / GAMMA)   # level change per exposure step, learnt
         self.wait = 0
         self.level, self.clipped = None, 0.0
         self.pending = None         # (level before, exposure direction) of the last step, to learn from
+
+    def aim(self, low=None, high=None):
+        """Keeps the plate in [low, high] from now on; no arguments: back to the settings' band."""
+        self.low = self.s["low"] if low is None else low
+        self.high = self.s["high"] if high is None else high
+
+    @property
+    def settled(self):
+        """The last metering was in the band and nothing is waiting to take effect."""
+        return self.wait == 0 and self.pending is None and self.level is not None and self.low <= self.level <= self.high
 
     def update(self, level, clipped):
         """One metering of the plate. Changes the exposure or gain if needed; returns True if it did."""
@@ -84,15 +102,14 @@ class ExposureControl:
 
         step, exposure, gain = s["exposure_step"], self.exposure, self.gain
         direction = 0
-        if level > s["high"] or clipped > s["max_clipped"]:
+        if level > self.high or clipped > s["max_clipped"]:
             if gain > 0:
                 gain = max(0.0, gain - s["gain_step"])
             elif exposure - step >= s["min_exposure"]:
                 exposure, direction = exposure - step, -1
-        elif level < s["low"]:
-            if exposure + step <= s["max_exposure"]:
-                if level * self.ratio <= s["high"]:
-                    exposure, direction = exposure + step, 1
+        elif level < self.low:
+            if exposure + step <= s["max_exposure"] and level * self.ratio <= self.high:
+                exposure, direction = exposure + step, 1
             elif gain + s["gain_step"] <= s["max_gain"]:
                 gain += s["gain_step"]
         if (exposure, gain) == (self.exposure, self.gain):
@@ -105,12 +122,15 @@ class ExposureControl:
             self.cap.set(cv2.CAP_PROP_GAIN, gain)
         return True
 
-    def meter(self, frame, cal=None):
-        """Meters a frame (on the plate if cal is given, else on its brightest part) and updates."""
-        return self.update(*(plate_level(frame, cal) if cal is not None else frame_level(frame)))
+    def meter(self, frame, cal=None, outline=None):
+        """Meters a frame (on the plate if cal is given, else where outline says it should be, else on its
+        brightest part) and updates."""
+        if cal is not None:
+            return self.update(*plate_level(frame, cal))
+        return self.update(*(level_within(frame, outline) if outline is not None else frame_level(frame)))
 
     def status(self):
         level = "?" if self.level is None else f"{self.level:.0f}"
         clipped = f", {self.clipped:.0%} clipped" if self.clipped >= 0.005 else ""
         return (f"exposure {self.exposure:g} (1/{2 ** -self.exposure:.0f} s), gain {self.gain:g}: "
-                f"plate at {level}{clipped} (aim {self.s['low']}-{self.s['high']})")
+                f"plate at {level}{clipped} (aim {self.low:g}-{self.high:g})")

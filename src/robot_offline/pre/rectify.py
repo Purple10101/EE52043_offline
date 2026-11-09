@@ -36,7 +36,7 @@ and `white_balance` scales the channels so the plate comes out neutral.
 
 import argparse
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import cv2
@@ -72,6 +72,10 @@ CROSS_MIN_CONTRAST = 6.0    # and at least this far (Lab) from the plate's
 CROSS_WIDTH_MM = (0.5, 1.8) # lip to lip, for a 1 mm groove seen through blur
 CROSS_MIN_FOUND = 0.6       # share of profiles in every half arm that must find the groove, else it is
 CROSS_MAX_RMS_PX = 1.5      # taken as covered; so is a crosshair that fits the model worse than this
+CROSS_SEARCH_MM = 6.0       # with a top edge missing, the crosshair is searched for this far round the model,
+CROSS_SEARCH_STEP_MM = 1.0  # in steps of this (under the groove's search width, 2 * CROSS_CLEAR_MM),
+CROSS_REFITS = 6            # then found again round each fit, at most this many times, until the model
+CROSS_SETTLED_PX = 0.2      # moves the crosshair less than this
 MIN_INLIERS = 0.5           # share of an edge's profiles that must find it on the fitted model
 MAX_RMS_PX = 2.0            # an edge further than this (rms) from the fitted model means a bad fit
 FIRST_MIN_FOUND = 0.3       # share of each top edge the first search must find (the rough pose can be off)
@@ -568,8 +572,9 @@ def _crosshair(lab, cam, st):
                 if len(groove) == 0 or groove[0] == 0 or groove[-1] == len(o) - 1:
                     continue
                 a, b = groove[0], groove[-1]
-                lip_a = o[a] - (dev[a] - threshold) / (dev[a] - dev[a - 1]) * step
-                lip_b = o[b] + (dev[b] - threshold) / (dev[b] - dev[b + 1]) * step
+                with np.errstate(divide="ignore", invalid="ignore"):     # a groove running into the clear
+                    lip_a = o[a] - (dev[a] - threshold) / (dev[a] - dev[a - 1]) * step   # band has no lip,
+                    lip_b = o[b] + (dev[b] - threshold) / (dev[b] - dev[b + 1]) * step   # and fails the width
                 if not CROSS_WIDTH_MM[0] <= lip_b - lip_a <= CROSS_WIDTH_MM[1]:
                     continue
                 middle = (lip_a + lip_b) / 2
@@ -658,6 +663,10 @@ def find_plate(frame, settings=None, start=None, intrinsics=None):
     frame's bright blob. intrinsics: (camera_matrix, dist_coeffs) to keep, so that only the pose is
     fitted; or None, in which case the focal length is fitted too (and the lens taken as
     distortion-free: the plate's edges, all near the middle of the frame, can't measure it).
+
+    One of the top's far and side edges may be missing, as when the bench behind it is as bright as
+    the plate (a pale lab bench behind the far edge). The crosshair must then be found and fit, and the
+    face bottom and near edge are fitted with it where they are found, to make up for the edge.
     """
     st = settings or Settings.from_config()
     cam = _Camera((frame.shape[1], frame.shape[0]), st.focal_px, intrinsics)
@@ -669,26 +678,41 @@ def find_plate(frame, settings=None, start=None, intrinsics=None):
     pose_only = [0, 1, 2, 3, 4, 5]
     free = pose_only if intrinsics is not None else pose_only + [6]
 
+    def measure(name, band):
+        i = names.index(name)
+        return _edge(name, gray, cam, st, *sides[i], EDGE_SPAN_MM, z_top, band, _falls)
+
+    def short_of(f):
+        return PlateNotFound(f"only {f.share:.0%} of the plate's {f.name} edge was found; is something over it?")
+
     def top_edges(band, min_found):
-        edges = [_edge(names[i], gray, cam, st, *sides[i], EDGE_SPAN_MM, z_top, band, _falls)
-                 for i in range(4) if i != near]
-        for f in edges:
-            if f.share < min_found:
-                raise PlateNotFound(f"only {f.share:.0%} of the plate's {f.name} edge was found; "
-                                    "is something over it?")
+        """The top's edges, but for the near side's and the missing one. One falling short of min_found
+        when none is missing yet becomes the missing one: a pale bench can show part of an edge, enough
+        for the first search but not for a fit."""
+        nonlocal missing
+        edges = [measure(names[i], band) for i in range(4) if i != near and names[i] != missing]
+        short = [f for f in edges if f.share < min_found]
+        if len(short) == 1 and missing is None:
+            missing = short[0].name
+            return [f for f in edges if f.name != missing]
+        if short:
+            raise short_of(short[0])
         return edges
 
     # 1. The far and side edges of the top, around the starting pose; the pose alone fitted to them.
-    #    From the bright blob, each rough outline in turn until one leads to all three edges.
+    #    From the bright blob, each rough outline in turn until one leads to all three edges, or to two
+    #    (the third is then missing, and the crosshair has to make up for it).
     starts = _rough_outlines(frame) if start is None else [start]
     for i, corners in enumerate(starts):
         _start_pose(cam, corners, st)
-        try:
-            edges = top_edges(FIRST_BAND_PX if start is None else NEAR_BAND_PX, FIRST_MIN_FOUND)
+        edges = [measure(names[j], FIRST_BAND_PX if start is None else NEAR_BAND_PX) for j in range(4) if j != near]
+        short = [f for f in edges if f.share < FIRST_MIN_FOUND]
+        if len(short) <= 1:
             break
-        except PlateNotFound:
-            if i == len(starts) - 1:
-                raise
+        if i == len(starts) - 1:
+            raise short_of(short[0])
+    missing = short[0].name if short else None
+    edges = [f for f in edges if f.name != missing]
     _fit(cam, edges, pose_only)
 
     # 2. The near side: the crosshair, else the face bottom, else (if the face is lit or dark enough
@@ -709,9 +733,54 @@ def find_plate(frame, settings=None, start=None, intrinsics=None):
         return {"crosshair": (cross, cross_share >= CROSS_MIN_FOUND),
                 "face bottom": (face, face.share >= MIN_INLIERS), "near edge": (top, top.share >= MIN_INLIERS)}
 
+    def search_crosshair():
+        """The crosshair looked for round the model, up to CROSS_SEARCH_MM out on the plate, and the
+        pose moved to put it where it was found best. It is only looked for within CROSS_SPAN_MM of the
+        model, and two edges can leave the model further off than that. Returns (feature, found)."""
+        steps = np.arange(-CROSS_SEARCH_MM, CROSS_SEARCH_MM + CROSS_SEARCH_STEP_MM / 2, CROSS_SEARCH_STEP_MM)
+        best = None
+        for dx in steps:
+            for dy in steps:
+                f, share = _crosshair(lab, cam, replace(st, cross_mm=(st.cross_mm[0] + dx, st.cross_mm[1] + dy)))
+                score = (share, f.share, -np.hypot(dx, dy))
+                if best is None or score > best[0]:
+                    best = (score, dx, dy)
+        (share, _, _), dx, dy = best
+        if share < CROSS_MIN_FOUND:
+            return None, False
+        # The plate's crosshair is seen where the model's point (dx, dy) away projects: move the camera so
+        # that the crosshair itself projects there.
+        cam.p[3:6] += cv2.Rodrigues(cam.p[:3])[0] @ np.array([dx, dy, 0.0])
+        cross, share = _crosshair(lab, cam, st)
+        return cross, share >= CROSS_MIN_FOUND
+
     def fit_near(edges, found, excluded):
         """Fits the camera to the edges and the first usable near-side feature. A crosshair that then
-        fits badly is taken as covered (a lead or a body on it) and the next one used instead."""
+        fits badly is taken as covered (a lead or a body on it) and the next one used instead. With an
+        edge missing, only the crosshair will do, and the focal length is held: two edges and the
+        crosshair can't tell it from the camera's distance. The face bottom and near edge stay checks."""
+        if missing is not None:
+            cross, ok = found["crosshair"]
+            if not ok:
+                cross, ok = search_crosshair()
+            if ok:
+                # Looked for again round each fit, until the model stops moving: a crosshair found
+                # off the model's middle draws it only part of the way each time.
+                for _ in range(CROSS_REFITS):
+                    _fit(cam, edges + [cross], pose_only)
+                    before = cam.project([[*st.cross_mm, z_top]])[0]
+                    again, share = _crosshair(lab, cam, st)
+                    if share < CROSS_MIN_FOUND:
+                        break
+                    cross = again
+                    _fit(cam, edges + [cross], pose_only)
+                    if np.linalg.norm(cam.project([[*st.cross_mm, z_top]])[0] - before) < CROSS_SETTLED_PX:
+                        break
+                found["crosshair"] = (cross, True)      # the one fitted, for the checks below
+                if _rms(cam, cross) <= CROSS_MAX_RMS_PX and cross.share >= CROSS_MIN_FOUND:
+                    return "crosshair", excluded
+            raise PlateNotFound(f"the plate's {missing} edge wasn't found, and the crosshair, which would make up "
+                                "for it, is covered or doesn't fit: is the bench behind that edge as bright as the plate?")
         for name in ("crosshair", "face bottom", "near edge"):
             if name in excluded or not found[name][1]:
                 continue
@@ -764,8 +833,11 @@ def find_plate(frame, settings=None, start=None, intrinsics=None):
             checks[name] = round(float(np.median(_residuals(cam, [f], cam.p)[0]) / out_px), 2)
     by_side = {f.name: (round(float(f.share), 3), round(_rms(cam, f), 2)) for f in edges}
     by_side[names[near]] = (round(float(found[used][0].share), 3), round(_rms(cam, found[used][0]), 2))
+    if missing is not None:     # for the record: how much of it shows on the fitted model
+        f = measure(missing, REFINE_BAND_PX)
+        by_side[missing] = (round(float(f.share), 3), round(_rms(cam, f), 2) if len(f.found) else None)
     r = cv2.Rodrigues(cam.p[:3])[0]
-    summary = {"near_side_by": used, "edges": by_side, "checks_mm": checks,
+    summary = {"near_side_by": used, "missing_edge": missing, "edges": by_side, "checks_mm": checks,
                "focal_px": round(float(k[0, 0]), 1), "camera_mm": np.round(position, 1).tolist(),
                "tilt_deg": round(float(np.degrees(np.arccos(-r[2, 2]))), 2)}
     return PlateFit(cam.p[:3].copy(), cam.p[3:6].copy(), k, np.asarray(dist, float),
@@ -923,11 +995,14 @@ def model_input(frame, cal, rect=None):
 
 
 def model_image(sample, image, rect_settings):
-    """A manifest sample's image as the model must see it: off-plate masked. Raises ValueError for
-    raw frames."""
+    """A manifest sample's image as the model must see it: a real frame's plate at MODEL_PLATE_LEVEL,
+    as model_input does (synthetic frames are drawn there), and off-plate masked. Raises ValueError
+    for raw frames."""
     if sample.get("space") != "rectified":
         raise ValueError(f"{sample['image']}: not a rectified frame, so it cannot be masked to the plate. "
                          "Regenerate old synthetic sets with `synth`; real frames need rectifying first.")
+    if sample.get("source") != "synthetic":
+        image, _ = white_balance(image, rect_settings, MODEL_PLATE_LEVEL)
     return mask_outside_plate(image, rect_settings)
 
 

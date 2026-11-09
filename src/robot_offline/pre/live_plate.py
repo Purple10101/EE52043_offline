@@ -1,6 +1,6 @@
 """Live plate check: the camera's view with the fitted plate drawn on it, next to the rectified plate.
 
-Opens the camera with configs/camera.toml and finds the plate as `rectify calibrate` does. From then
+Opens the camera with configs/camera.toml and finds the plate with plate_search.Tracker. From then
 on the camera's pose is fitted again to the newest frame, over and over in the background (about a
 second each), keeping the focal length from the first fit, so the picture never waits for it.
 
@@ -27,7 +27,6 @@ Keys:  q / Esc  quit      g  grid on or off      z  whole camera frame or zoomed
 """
 
 import argparse
-import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -36,57 +35,13 @@ import cv2
 import numpy as np
 
 from robot_offline import config
-from robot_offline.pre import rectify
+from robot_offline.pre import plate_search, rectify
 from robot_offline.pre.camera import label, open_camera, show
-from robot_offline.pre.exposure import ExposureControl
 
 WINDOW = "robot_offline live plate"
 HEIGHT = 900                # px, both views are shown this tall
 ZOOM_MARGIN = 0.15          # zoomed camera view: the plate plus this share of its size around it
 COLOURS = {"top": (0, 220, 0), "face bottom": (255, 255, 0), "crosshair": (255, 0, 255)}
-
-
-class Fitter(threading.Thread):
-    """Fits the plate to the newest frame, again and again, in the background (also used by
-    live_detect). interval: seconds between fits once the plate is found; 0 for as often as it goes.
-    Until it is found, and after `restart`, it tries every frame."""
-
-    def __init__(self, settings, interval=0.0):
-        super().__init__(daemon=True)
-        self.settings = settings
-        self.interval = interval
-        self.frame = None           # the newest frame, set by the display loop
-        self.cal = None             # the latest good fit
-        self.first = None           # the first good fit, for how far the plate has moved since
-        self.error = None           # why the latest try failed, or None
-        self.seconds = 0.0          # how long the latest fit took
-        self.fitted_at = 0.0
-        self.locked = False
-        self.restart = False
-        self.stop = False
-
-    def run(self):
-        done, tried_at = None, 0.0
-        while not self.stop:
-            frame = self.frame
-            waiting = self.cal is not None and not self.restart and time.perf_counter() - tried_at < self.interval
-            if frame is None or frame is done or self.locked or waiting:
-                time.sleep(0.02)
-                continue
-            done = frame
-            t0 = tried_at = time.perf_counter()
-            try:
-                if self.cal is None or self.restart:
-                    self.restart = False
-                    cal, _ = rectify.calibrate(frame, self.settings)
-                    self.first = cal
-                else:
-                    cal, _ = rectify.recalibrate(frame, self.cal)
-                rectify.rectify(frame, cal)             # builds its remap tables here, not in the display loop
-                self.cal, self.error = cal, None
-            except rectify.PlateNotFound as e:
-                self.error = str(e)
-            self.seconds, self.fitted_at = time.perf_counter() - t0, time.perf_counter()
 
 
 def camera_view(frame, cal, zoom):
@@ -126,10 +81,10 @@ def rectified_view(frame, cal, grid):
 
 
 def status_lines(fitter):
-    """What the fit says, for the top of the window."""
+    """What the fit says, for the top of the window. fitter: the plate_search.Tracker."""
     cal = fitter.cal
-    if cal is None:
-        return [f"looking for the plate: {fitter.error}" if fitter.error else "looking for the plate..."]
+    if cal is None or fitter.searching:
+        return [fitter.status()]
     fit = cal.fit
     age = time.perf_counter() - fitter.fitted_at
     lines = []
@@ -160,27 +115,22 @@ def main(argv=None):
     camera = config.load("camera")
     cap = open_camera(camera)
     fixed = camera["camera"]["exposure"], camera["camera"]["gain"]
-    control = ExposureControl(camera["exposure_control"], *fixed, cap)
     print(__doc__.split("Keys:", 1)[1].rstrip())
-    fitter = Fitter(rectify.Settings.from_config())
-    fitter.start()
+    fitter = plate_search.Tracker(cap, camera=camera, refit_seconds=0.0)
 
     cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
-    grid, zoom, follow, shown, times = True, True, True, None, []
+    grid, zoom, shown, times = True, True, None, []
     while True:
         ok, frame = cap.read()
         if not ok:
             continue
-        fitter.frame = frame
-        cal = fitter.cal
-        if follow:
-            control.meter(frame, cal)
+        cal = fitter.update(frame)
         times = (times + [time.perf_counter()])[-10:]
         fps = (len(times) - 1) / (times[-1] - times[0]) if len(times) > 1 else 0.0
 
         left = camera_view(frame, cal, zoom)
         right = rectified_view(frame, cal, grid) if cal is not None else np.zeros((HEIGHT, HEIGHT, 3), np.uint8)
-        exposure = control.status() if follow else f"exposure fixed at {fixed[0]}, gain {fixed[1]} (e to follow the light)"
+        exposure = fitter.control.status() if fitter.follow else f"exposure fixed at {fixed[0]}, gain {fixed[1]} (e to follow the light)"
         label(left, status_lines(fitter) + [exposure, f"{fps:.1f} fps   q quit  g grid  z zoom  l lock  "
                                                       "c start again  e exposure  s save"])
         shown = show(np.hstack([left, right]), shown, WINDOW)
@@ -195,14 +145,12 @@ def main(argv=None):
         elif key == ord("l"):
             fitter.locked = not fitter.locked
         elif key == ord("c"):
-            fitter.restart = True
-            fitter.locked = False
+            fitter.restart()
         elif key == ord("e"):
-            follow = not follow
-            if not follow:
+            fitter.follow = not fitter.follow
+            if not fitter.follow:
                 cap.set(cv2.CAP_PROP_EXPOSURE, fixed[0])
                 cap.set(cv2.CAP_PROP_GAIN, fixed[1])
-                control = ExposureControl(camera["exposure_control"], *fixed, cap)
         elif key == ord("s"):
             out = Path(args.save_dir)
             out.mkdir(parents=True, exist_ok=True)
@@ -213,7 +161,7 @@ def main(argv=None):
                 cal.save(f"{stem}_rectify.json")
             print(f"Saved {stem}.png" + (", _rectified.png and _rectify.json" if cal is not None else ""))
 
-    fitter.stop = True
+    fitter.close()
     cap.release()
     cv2.destroyAllWindows()
 

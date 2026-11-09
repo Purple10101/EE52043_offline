@@ -10,7 +10,11 @@ fourcc = "MJPG"
 width = 4608              # native mode; the 4:3 modes look upscaled
 height = 2592
 autofocus = false
-focus = 314               # far half of the plate sharpest at 306, near half at 326; best worst case
+focus = 306               # best worst case over the plate, measured 2026-11-09: front sharpest at 322, back at
+                          # 290-298; at 306 every body is at >= 71% of its best sharpness, at the old 314 the
+                          # back fell to 53%. Segmentation scores don't change with it; band reading needs it.
+                          # It drifts (on 2026-10-23 the far half peaked at 306, near at 326, giving 314), so
+                          # check it at rig setup: experiments/2026-11-09_front_back/focus_sweep.py (README there)
 auto_exposure = false
 exposure = -5             # DirectShow log2 s (~1/32 s): plate at ~195/255, nothing clipped; -4 clips most of it
 gain = 0
@@ -26,7 +30,8 @@ gamma = 100
 
 [exposure_control]
 # Exposure that follows the light, metered on the plate's white top (exposure.py), in the live
-# tools. exposure and gain above are where it starts.
+# tools, once the plate is found ([plate_search] has the level it is looked for at). exposure and gain
+# above are where it starts.
 low = 165                 # the plate's level (grey) is kept between these: training frames have it at ~200
 high = 235
 max_clipped = 0.01        # share of the plate's brighter half at 250 or more that counts as too bright
@@ -36,7 +41,25 @@ max_exposure = -4         # 1/16 s: the longest that has any effect, the frames 
 gain_step = 8             # gain is only added at max_exposure, this much per step
 max_gain = 100            # the camera's most; 0 to 100 brings the plate from ~93 to ~240 (about 8x the light),
                           # image noise from 3 to 5.5 grey, and the plate is still found
-settle_frames = 3         # frames the camera takes to apply a change
+settle_frames = 6         # frames read before a change shows: the 6th, at 4608 x 2592 MJPG (measured 2026-11-09;
+                          # with 3, the control judged stale frames and swung between -5 and -7)
+
+[plate_search]
+# How every tool finds the plate (robot_offline/pre/plate_search.py, also used by the robot repo).
+# Where the plate sits in the raw frame on the rig, corners in px (image order), from a fit on 2026-11-09.
+# The tower and plate are one rig, so it stays within some 40 px of here wherever the rig is set up; the
+# search starts here when no tool has found the plate yet (data/plate/last_rectify.json).
+rig_corners_px = [[1746, 795], [3023, 876], [3058, 2076], [1444, 1938]]
+search_level = [60, 140]  # the plate's grey while it is looked for: a dim plate stands out from a pale bench
+refit_seconds = 3.0       # once found, it is fitted again this often, at the working exposure
+sweep_after = 3           # failed searches before trying every exposure in turn
+
+[closeup]
+# Band reading's close-ups: after segmentation, one capture per resistor at the focus that suits its
+# distance from the lens (post/bands/closeup.py). Focus = a + b / distance, fitted to these points:
+# [distance mm, best focus]. Start: the focus sweep of 2026-11-09 (experiments/2026-11-09_front_back);
+# `python -m robot_offline.post.bands.closeup calibrate --save` measures more and adds them.
+points = [[232.5, 322.0], [233.7, 322.0], [274.0, 298.0], [275.7, 290.0], [266.3, 303.5], [237.1, 325.4], [263.2, 304.3], [234.6, 325.6]]
 
 [mount]
 # The camera tower as designed (camera_tower/README.md); copied into each session.toml.
