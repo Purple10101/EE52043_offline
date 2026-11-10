@@ -1,0 +1,137 @@
+{
+ "train": [
+  "synth_obj_v1"
+ ],
+ "val": [
+  "synth_obj_v1_val"
+ ],
+ "epochs": 12,
+ "unsure": [
+  0.2,
+  0.8
+ ],
+ "synthetic_val": {
+  "all others": {
+   "n": 463,
+   "resistor": 0.0,
+   "unsure": 0.0,
+   "not": 1.0
+  },
+  "all resistors": {
+   "n": 914,
+   "resistor": 1.0,
+   "unsure": 0.0,
+   "not": 0.0
+  },
+  "blob": {
+   "n": 30,
+   "resistor": 0.0,
+   "unsure": 0.0,
+   "not": 1.0
+  },
+  "block": {
+   "n": 41,
+   "resistor": 0.0,
+   "unsure": 0.0,
+   "not": 1.0
+  },
+  "capacitor_axial": {
+   "n": 37,
+   "resistor": 0.0,
+   "unsure": 0.0,
+   "not": 1.0
+  },
+  "capacitor_ceramic": {
+   "n": 40,
+   "resistor": 0.0,
+   "unsure": 0.0,
+   "not": 1.0
+  },
+  "capacitor_lying": {
+   "n": 12,
+   "resistor": 0.0,
+   "unsure": 0.0,
+   "not": 1.0
+  },
+  "capacitor_radial": {
+   "n": 37,
+   "resistor": 0.0,
+   "unsure": 0.0,
+   "not": 1.0
+  },
+  "cylinder": {
+   "n": 30,
+   "resistor": 0.0,
+   "unsure": 0.0,
+   "not": 1.0
+  },
+  "diode": {
+   "n": 81,
+   "resistor": 0.0,
+   "unsure": 0.0,
+   "not": 1.0
+  },
+  "dip8": {
+   "n": 47,
+   "resistor": 0.0,
+   "unsure": 0.0,
+   "not": 1.0
+  },
+  "nut": {
+   "n": 14,
+   "resistor": 0.0,
+   "unsure": 0.0,
+   "not": 1.0
+  },
+  "resistor": {
+   "n": 914,
+   "resistor": 1.0,
+   "unsure": 0.0,
+   "not": 0.0
+  },
+  "screw": {
+   "n": 48,
+   "resistor": 0.0,
+   "unsure": 0.0,
+   "not": 1.0
+  },
+  "to220": {
+   "n": 21,
+   "resistor": 0.0,
+   "unsure": 0.0,
+   "not": 1.0
+  },
+  "to92": {
+   "n": 25,
+   "resistor": 0.0,
+   "unsure": 0.0,
+   "not": 1.0
+  }
+ },
+ "real_test": {
+  "all others": {
+   "n": 24,
+   "resistor": 0.0,
+   "unsure": 0.0417,
+   "not": 0.9583
+  },
+  "all resistors": {
+   "n": 241,
+   "resistor": 0.9917,
+   "unsure": 0.0,
+   "not": 0.0083
+  },
+  "resistor": {
+   "n": 241,
+   "resistor": 0.9917,
+   "unsure": 0.0,
+   "not": 0.0083
+  },
+  "screw": {
+   "n": 24,
+   "resistor": 0.0,
+   "unsure": 0.0417,
+   "not": 0.9583
+  }
+ }
+}

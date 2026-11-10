@@ -68,13 +68,18 @@ def main():
     st = rectify.Settings.from_config(ds)
     labels = manifest.load(ds["labels"]["rules_version"])
     by_image = {s["image"]: s for s in labels["samples"]}
+
+    def resistors(sample):
+        """The frame's resistor outlines only, kept out of each draft. Screws drafted on an earlier run
+        are left out, so running this again redrafts them instead of masking them away."""
+        return [np.asarray(i["polygon"], float) for i in sample["instances"] if i.get("kind", "resistor") == "resistor"]
     OUT.mkdir(exist_ok=True)
     drafts = {}
     for key, boxes in BOXES.items():
         img = cv2.imread(str(config.DATA_DIR / key))
-        drafts[key] = [draft(img, b, manifest.polygons(by_image[key])) for b in boxes]
+        drafts[key] = [draft(img, b, resistors(by_image[key])) for b in boxes]
     bright = max(BOLT_SCENE, key=lambda k: cv2.imread(str(config.DATA_DIR / k)).mean())
-    bolt = [draft(cv2.imread(str(config.DATA_DIR / bright)), BOLT_BOX, manifest.polygons(by_image[bright]))]
+    bolt = [draft(cv2.imread(str(config.DATA_DIR / bright)), BOLT_BOX, resistors(by_image[bright]))]
     for key in BOLT_SCENE:
         drafts[key] = bolt
     summary = {}

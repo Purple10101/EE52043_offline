@@ -86,3 +86,13 @@ def test_a_model_wants_grey_only_if_its_handoff_says_so(tmp_path):
     assert tiling.wants_grey(weights)
     (tmp_path / "handoff.json").write_text('{"tile_size": 1024}')
     assert not tiling.wants_grey(weights)
+
+
+def test_weights_in_a_training_run_use_the_run_folders_handoff(tmp_path):
+    # train.py writes runs/<name>/handoff.json, ultralytics runs/<name>/weights/best.pt: evaluating
+    # straight from a run must still feed a grey model grey (it fed colour until 2026-11-09).
+    (tmp_path / "weights").mkdir()
+    weights = tmp_path / "weights" / "best.pt"
+    assert not tiling.wants_grey(weights)
+    (tmp_path / "handoff.json").write_text('{"input": "grey"}')
+    assert tiling.wants_grey(weights)

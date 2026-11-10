@@ -112,3 +112,14 @@ leads_off_plate = 0.2     # chance a body's leads may run off the plate (cut by 
                           # one placed against an edge always may. Allowed for all, 72% of bodies had a lead off
                           # the plate, far more than on the rig
 back_dark = [0.0, 0.12]   # light falls off away from the camera by up to this share (measured about 8%)
+
+[synthetic_objects_cut]
+# `synth --profile objects_cut`: [synthetic_objects] plus bodies cut off at the plate's far edge, as on the
+# rig (experiments/2026-11-09_seg_objects_v1_test, live edge test of 2026-11-09). A body lying at the far
+# (+x) edge appears up to 2.4 mm past it (parallax), and the plate mask cuts that part off; seg_objects_v1
+# had never seen one. The mask stays as it is: what lies past the plate (bench, gap, rig) changes from rig
+# to rig, so the model learns the cut body against plain plate grey instead.
+base = "objects"
+edge_fraction = 0.35      # more bodies against an edge than in [synthetic_objects] (0.25)
+edge_cut_fraction = 0.6   # of those, the share placed by where they lie, not how they appear
+edge_cut_gap_mm = [0.0, 1.5]  # their footprint this far from the edge: tops overhang at the far edge

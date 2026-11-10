@@ -338,3 +338,52 @@ def test_objects_profile_comes_from_the_config():
     assert not plain.objects_profile and plain.labelled_objects_per_frame == (0, 0) and plain.edge_fraction == 0
     with pytest.raises(config.ConfigError):
         Settings.from_config(config.load("dataset"), "nonesuch")
+
+
+# --- Cut-off bodies ([synthetic_objects_cut]) ------------------------------------------------------
+
+CUT = {**OBJECTS, "edge_fraction": 1.0, "edge_cut_fraction": 1.0, "edge_cut_gap_mm": (0.0, 0.5)}
+
+
+def test_cut_bodies_lie_on_the_plate_but_appear_past_its_far_edge():
+    from robot_offline.training.synth import _plate_shape
+    st = _with(**CUT)
+    plate = _plate_shape(st)
+    over = []
+    for seed in range(6):
+        bodies, polys = _place_bodies(st, np.random.default_rng(seed))
+        for body, poly in zip(bodies, polys):
+            assert body.cut and plate.buffer(0.5).contains(Polygon(body.footprint()))
+            if not plate.contains(poly):
+                over.append(poly.centroid.x)
+    # Parallax pushes tops away from the camera (off to the left): the overhangs are on the right.
+    assert over and np.mean(over) > (st.plate[0] + st.plate[2]) / 2
+
+
+def test_cut_body_labels_are_what_the_plate_mask_leaves():
+    from robot_offline.training.synth import _plate_shape
+    st = _with(**CUT)
+    plate = _plate_shape(st).buffer(1.0)
+    cut_short = 0
+    for seed in range(4):
+        frame = render_frame(st, np.random.default_rng(seed))
+        assert frame.polygons
+        for p in frame.polygons:
+            assert plate.contains(Polygon(p))
+        cut_short += sum(Polygon(p).bounds[2] >= st.plate[2] - 2 for p in frame.polygons)
+    assert cut_short > 0                                    # some labels end at the far edge
+
+
+def test_without_cut_fraction_edge_bodies_are_placed_as_before():
+    st = _with(**{**OBJECTS, "edge_fraction": 1.0})
+    a = render_frame(st, np.random.default_rng(3))
+    b = render_frame(_with(**{**OBJECTS, "edge_fraction": 1.0, "edge_cut_gap_mm": (0.0, 0.1)}), np.random.default_rng(3))
+    assert all(np.array_equal(p, q) for p, q in zip(a.polygons, b.polygons)) and np.array_equal(a.image, b.image)
+
+
+def test_a_profile_can_build_on_another():
+    st = Settings.from_config(config.load("dataset"), "objects_cut")
+    objects = Settings.from_config(config.load("dataset"), "objects")
+    assert st.objects_profile and st.edge_cut_fraction > 0 and objects.edge_cut_fraction == 0
+    assert st.labelled_objects_per_frame == objects.labelled_objects_per_frame
+    assert st.edge_fraction > objects.edge_fraction

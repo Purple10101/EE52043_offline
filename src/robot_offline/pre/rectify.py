@@ -950,11 +950,20 @@ def rectify(frame, cal, interpolation=cv2.INTER_LINEAR):
 _MASKS = {}
 
 
-def plate_mask(settings):
+def plate_mask(settings, lift_mm=0.0):
     """H×W bool: the rectified pixels whose centres lie on the plate's top surface (rounded corners
-    included). Cached per geometry."""
+    included). Cached per geometry.
+
+    lift_mm: also keep what the plate would cover lifted by up to this much towards the camera
+    (settings.camera_mm). The rectified image is true only at the plate's surface; anything standing
+    on it appears pushed away from the lens, by about 2.4 mm for a 2.5 mm body at the far (+x) edge
+    and much less elsewhere. So a body lying at the far edge seems to overhang it, and a plain mask
+    cuts off its top (experiments/2026-11-09_seg_objects_v1_test, edge_evidence.jpg). A lift keeps
+    that overhang, widening the mask only where parallax pushes outwards: about lift_mm at the far
+    edge, a few tenths at the sides, nothing at the near edge."""
     key = (settings.size, tuple(settings.plate_corners_mm.ravel()), settings.px_per_mm,
-           settings.margin_mm, settings.corner_radius_mm)
+           settings.margin_mm, settings.corner_radius_mm, float(lift_mm),
+           tuple(settings.camera_mm) if lift_mm else None, settings.top_z_mm if lift_mm else None)
     if key not in _MASKS:
         w, h = settings.size
         u, v = np.meshgrid(np.arange(w, dtype=np.float64), np.arange(h, dtype=np.float64))
@@ -962,39 +971,52 @@ def plate_mask(settings):
         c = settings.plate_corners_mm
         centre, half = (c.min(0) + c.max(0)) / 2, (c.max(0) - c.min(0)) / 2
         r = settings.corner_radius_mm
-        q = np.abs(xy - centre) - (half - r)            # rounded-rectangle distance, outside > 0
-        outside = np.linalg.norm(np.maximum(q, 0), axis=1) + np.minimum(q.max(1), 0) - r
-        _MASKS[key] = (outside <= 0).reshape(h, w)
+
+        def outside(pts):                                # rounded-rectangle distance, outside > 0
+            q = np.abs(pts - centre) - (half - r)
+            return np.linalg.norm(np.maximum(q, 0), axis=1) + np.minimum(q.max(1), 0) - r
+
+        keep = outside(xy) <= 0
+        if lift_mm > 0:
+            cam = np.asarray(settings.camera_mm, float)
+            above = cam[2] - settings.top_z_mm
+            # A point at height z over footprint p appears at p + (p - cam) * z / (above - z); so the
+            # footprint under an apparent point x is (x + k * cam) / (1 + k), k = z / (above - z).
+            for z in np.linspace(lift_mm / 8, lift_mm, 8):
+                k = z / (above - z)
+                keep |= outside((xy + k * cam[:2]) / (1 + k)) <= 0
+        _MASKS[key] = keep.reshape(h, w)
     return _MASKS[key]
 
 
-def mask_outside_plate(rectified, settings):
+def mask_outside_plate(rectified, settings, lift_mm=0.0):
     """A copy of a rectified (and white-balanced) image with everything off the plate replaced by
     the plate's own grey, so a model given it can take nothing from the surroundings.
 
     The fill is the median colour of the plate's brighter half (resistors and marks left out), so
-    the plate's edge disappears into it. Training and inference both use this.
+    the plate's edge disappears into it. Training and inference both use this. lift_mm: see
+    plate_mask; the fill still comes from the plate alone.
     """
     inside = plate_mask(settings)
     pixels = rectified[inside].reshape(-1, rectified.shape[2]).astype(np.float32)
     lum = pixels.mean(1)
     fill = np.median(pixels[lum >= np.median(lum)], axis=0)
     out = rectified.copy()
-    out[~inside] = np.round(fill).astype(rectified.dtype)
+    out[~plate_mask(settings, lift_mm)] = np.round(fill).astype(rectified.dtype)
     return out
 
 
-def model_input(frame, cal, rect=None):
+def model_input(frame, cal, rect=None, lift_mm=0.0):
     """What the model sees for a raw camera frame: rectified, white-balanced with the plate brought to
     MODEL_PLATE_LEVEL (as in the training frames, whatever the exposure), off-plate masked.
 
     rect: the frame already rectified, to save doing it again. Returns (model input, the rectified
     image white-balanced to that level, unmasked)."""
     balanced, _ = white_balance(rectify(frame, cal) if rect is None else rect, cal.settings, MODEL_PLATE_LEVEL)
-    return mask_outside_plate(balanced, cal.settings), balanced
+    return mask_outside_plate(balanced, cal.settings, lift_mm), balanced
 
 
-def model_image(sample, image, rect_settings):
+def model_image(sample, image, rect_settings, lift_mm=0.0):
     """A manifest sample's image as the model must see it: a real frame's plate at MODEL_PLATE_LEVEL,
     as model_input does (synthetic frames are drawn there), and off-plate masked. Raises ValueError
     for raw frames."""
@@ -1003,7 +1025,7 @@ def model_image(sample, image, rect_settings):
                          "Regenerate old synthetic sets with `synth`; real frames need rectifying first.")
     if sample.get("source") != "synthetic":
         image, _ = white_balance(image, rect_settings, MODEL_PLATE_LEVEL)
-    return mask_outside_plate(image, rect_settings)
+    return mask_outside_plate(image, rect_settings, lift_mm)
 
 
 def white_balance(rectified, settings, level=None):

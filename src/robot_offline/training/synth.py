@@ -184,6 +184,12 @@ class Settings:
     leads_off_plate: float = 0.0           # chance a body's leads may run off the plate (cut by the plate mask,
                                            # as on the rig); one placed against an edge always may, if above 0
     back_dark: tuple[float, float] = (0.0, 0.0)            # light falls off away from the camera by this share
+    # Cut-off bodies ([synthetic_objects_cut]): of the bodies placed against an edge, this share is placed
+    # by where it lies (its footprint), not by how it appears, edge_cut_gap_mm from the edge. Its top then
+    # appears past the far edge (parallax) and the plate mask cuts it, as on the rig; its label is the
+    # part left on the plate (experiments/2026-11-09_seg_objects_v1_test, edge_evidence.jpg).
+    edge_cut_fraction: float = 0.0
+    edge_cut_gap_mm: tuple[float, float] = (0.0, 1.5)
 
     def scaled(self, k):
         """The same frame drawn k times finer: every px quantity times k (pixel-centre convention)."""
@@ -199,13 +205,17 @@ class Settings:
     @classmethod
     def from_config(cls, dataset, profile=None):
         """Settings from configs/dataset.toml [synthetic]; profile "objects" applies [synthetic_objects]
-        over it."""
+        over it, and a profile with base = "objects" applies that first."""
         area, syn = dataset["work_area"], dict(dataset["synthetic"])
-        if profile is not None:
-            key = f"synthetic_{profile}"
+        chain, name = [], profile
+        while name is not None:              # a profile may build on another: base = "<profile>"
+            key = f"synthetic_{name}"
             if key not in dataset:
                 raise config.ConfigError(f"dataset.toml: no [{key}] for --profile {profile}")
-            syn.update(dataset[key])
+            chain.append(dataset[key])
+            name = dict(dataset[key]).get("base")
+        for section in reversed(chain):
+            syn.update({k: v for k, v in section.items() if k != "base"})
         rect = rectify.Settings.from_config(dataset)
         width, height = rect.size
         x0, y0 = area["x0"], area["y0"]
@@ -261,6 +271,8 @@ class Settings:
             edge_gap_mm=tuple(syn.get("edge_gap_mm", (0.5, 8.0))),
             leads_off_plate=float(syn.get("leads_off_plate", 0.0)),
             back_dark=tuple(syn.get("back_dark", (0.0, 0.0))),
+            edge_cut_fraction=float(syn.get("edge_cut_fraction", 0.0)),
+            edge_cut_gap_mm=tuple(syn.get("edge_cut_gap_mm", (0.0, 1.5))),
         )
 
 
@@ -303,6 +315,7 @@ class Resistor:
     lead_style: str = "axial"             # "axial": one out of each end; "radial": both out of one end; "none"
     lead_pitch: float = 0.0               # px between radial leads
     at_edge: bool = False                 # placed against a plate edge (edge_fraction)
+    cut: bool = False                     # placed there by its footprint (edge_cut_fraction): may appear past it
 
     @property
     def lean(self):
@@ -334,6 +347,16 @@ class Resistor:
 
     def polygon(self):
         return Polygon(self.outline())
+
+    def footprint(self):
+        """Where the body lies on the plate: its outline at plate level, without parallax."""
+        local = _body_outline(self.length, self.radius, self.package.waist, self.end)
+        c, s = math.cos(self.yaw), math.sin(self.yaw)
+        return self.centre + local[:, :1] * (c, s) + local[:, 1:] * (-s, c)
+
+    def resting(self):
+        """What must lie on the plate: the footprint for a cut body, else the whole apparent body."""
+        return self.footprint() if self.cut else self.outline()
 
     @property
     def first_end(self):
@@ -524,13 +547,14 @@ def _plate_shape(st):
     return box(x0 + r, y0 + r, x1 - 1 - r, y1 - 1 - r).buffer(r, 16)
 
 
-def _edge_sides(st, rng):
+def _edge_sides(st, rng, cut=False):
     """Which plate edges to put something against (0 left, 1 right, 2 top, 3 bottom; two for a
-    corner), each with its gap in px."""
+    corner), each with its gap in px (edge_cut_gap_mm for a cut body)."""
     sides = [int(rng.integers(4))]
     if rng.random() < 0.2:                                      # a corner
         sides.append(int(rng.integers(2, 4)) if sides[0] < 2 else int(rng.integers(0, 2)))
-    return [(side, rng.uniform(*st.edge_gap_mm) * st.px_per_mm) for side in sides]
+    gaps = st.edge_cut_gap_mm if cut else st.edge_gap_mm
+    return [(side, rng.uniform(*gaps) * st.px_per_mm) for side in sides]
 
 
 def _edge_shift(outline, side, gap, area):
@@ -547,11 +571,12 @@ def _edge_shift(outline, side, gap, area):
 
 def _to_edge(res, st, rng):
     """Moves res so it lies close to one plate edge, or two at a corner (its apparent outline moves a
-    little with position, so twice)."""
-    sides = _edge_sides(st, rng)
+    little with position, so twice). With edge_cut_fraction, by its footprint instead (res.cut)."""
+    res.cut = st.edge_cut_fraction > 0 and rng.random() < st.edge_cut_fraction
+    sides = _edge_sides(st, rng, res.cut)
     for _ in range(2):
         for side, gap in sides:
-            res.centre = res.centre + _edge_shift(res.outline(), side, gap, st.work_area)
+            res.centre = res.centre + _edge_shift(res.resting(), side, gap, st.work_area)
     res.at_edge = True
 
 
@@ -682,9 +707,9 @@ def _place_bodies(st, rng, kinds=()):
     for kind in ["resistor"] * n + list(kinds):
         for _ in range(ATTEMPTS):
             cand = _candidate(st, rng, bodies, single, kind)
-            if cand is None or not _inside(cand[0].outline(), st.work_area):
+            if cand is None or not _inside(cand[0].resting(), st.work_area):
                 continue
-            if plate is not None and not plate.contains(cand[0].polygon()):
+            if plate is not None and not plate.contains(Polygon(cand[0].resting())):
                 continue
             res, mode, anchor = cand
             if not _fits(res, mode, anchor, polys, min_gap):
@@ -1677,8 +1702,11 @@ def _camera(img, rng, st):
 
 
 def _labels(polys, st):
-    """Visible part of each body, clipped to the frame: (polygons, instance ids)."""
+    """Visible part of each body, clipped to the frame: (polygons, instance ids). With
+    edge_cut_fraction, clipped to the plate too: what the plate mask leaves of a cut body."""
     frame = box(-0.5, -0.5, st.width - 0.5, st.height - 0.5)
+    if st.edge_cut_fraction > 0:
+        frame = frame.intersection(_plate_shape(st))
     polygons, ids = [], []
     for i, p in enumerate(polys):
         above = [q for q in polys[i + 1:] if q.intersects(p)]
@@ -1961,7 +1989,7 @@ def main(argv=None):
     parser.add_argument("--workers", type=int, default=4, help="processes; 1 runs in this process")
     parser.add_argument("--preview", type=int, default=5,
                         help="write outlined previews of the first N frames to preview/")
-    parser.add_argument("--profile", choices=["objects"],
+    parser.add_argument("--profile", choices=["objects", "objects_cut"],
                         help="objects: every object of a pickable size labelled, with its kind ([synthetic_objects])")
     args = parser.parse_args(argv)
 

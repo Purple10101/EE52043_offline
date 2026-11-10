@@ -200,6 +200,21 @@ def test_nothing_off_the_plate_survives_the_mask():
     assert not plate[100, 100] and plate[140, 140]
 
 
+def test_a_lifted_mask_opens_only_where_parallax_pushes_bodies_out():
+    # The camera stands off the -x edge, so a body's top appears pushed towards +x: a lifted mask
+    # must give room at the far (+x) edge, a little at the sides, and none at the near (-x) edge.
+    st = rectify.Settings.from_config()
+    flat, lifted = rectify.plate_mask(st), rectify.plate_mask(st, lift_mm=3.0)
+    assert (lifted | ~flat).all()                                         # only ever adds
+    row = lifted[600]
+    far = np.flatnonzero(row).max() - 1099                                # px past the far edge
+    assert 20 <= far <= 32                                                # about 2.5 to 3 mm at 10 px/mm
+    assert not row[99]                                                    # near edge unchanged
+    side = np.flatnonzero(lifted[:, 600])                                 # top and bottom edges
+    assert 100 - side.min() <= 12 and side.max() - 1099 <= 12                 # about 1 and 0.5 mm
+    assert np.array_equal(rectify.plate_mask(st, 0.0), flat)
+
+
 def test_a_frame_without_the_plate_is_rejected():
     dark = np.full((FRAME[1], FRAME[0], 3), (60, 110, 150), np.uint8)
     with pytest.raises(rectify.PlateNotFound):

@@ -109,9 +109,14 @@ def merge(tile_predictions):
 
 
 def wants_grey(weights):
-    """Whether these weights were trained on greyscale frames, from the handoff.json beside them."""
-    handoff = Path(weights).with_name("handoff.json")
-    return handoff.exists() and json.loads(handoff.read_text()).get("input") == "grey"
+    """Whether these weights were trained on greyscale frames, from their handoff.json: beside them
+    (models/<name>/best.pt) or, for weights still in a training run (runs/<name>/weights/best.pt),
+    in the run folder above."""
+    weights = Path(weights)
+    for handoff in (weights.with_name("handoff.json"), weights.parent.with_name("handoff.json")):
+        if handoff.exists():
+            return json.loads(handoff.read_text()).get("input") == "grey"
+    return False
 
 
 def predict_frame(model, image, frame_tiles, conf=0.25, epsilon_px=1.0, batch=4, grey=False, **kwargs):
