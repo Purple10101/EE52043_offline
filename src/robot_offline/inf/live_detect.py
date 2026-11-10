@@ -18,6 +18,12 @@ runs: "4k7 0.99" is a reading, "? 1k 0.50" a best guess below the reader's limit
 measure instead. With values on, the exposure keeps the plate at the reading level (grey 205 to 225),
 where the bands read best; B turns values off, and the exposure goes back to the model's band.
 
+Each body is also tagged resistor or not (post/resistor_tag.py, --tagger), its P(resistor) averaged over
+the same runs, since an object model outlines screws, diodes and the rest too. Bands are read only on
+a body that isn't tagged "not". On one tagged "unsure" the reading is shown as "unsure 0.55: ~4k7, measure":
+never a value to use, whatever the reader's confidence. Without the tagger's weights every body counts
+as a resistor.
+
 On the right, one tile per detected body shows only its segmented pixels: taken from the top-down
 image (the same 10 px/mm for every body, free of the camera's angle), turned so the body lies
 horizontally, enlarged, and black outside the predicted outline. Tiles are numbered and coloured
@@ -36,6 +42,7 @@ Keys:  q / Esc  quit      v  camera view / top-down view      m  top-down: what 
 
 import argparse
 import time
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 
@@ -45,7 +52,7 @@ import numpy as np
 from robot_offline import config
 from robot_offline.inf import tiling
 from robot_offline.inf.steady import FLOOR, Steady
-from robot_offline.post import skeleton
+from robot_offline.post import resistor_tag, skeleton
 from robot_offline.post.bands import crops, learned
 from robot_offline.pre import plate_search, rectify
 from robot_offline.pre.camera import label, open_camera, show
@@ -141,18 +148,61 @@ def cutout_panel(image, polygons, scores, height, bodies=(), settings=None):
     return panel
 
 
-def read_values(net, views, frame, cal, plain, polygons, ids=None):
+class TagViews:
+    """Each body's resistor logit averaged over its last `window` runs (log-odds average, like
+    learned.Views), so one run's odd crop doesn't flip its tag. Bodies are named by steady.Steady's ids."""
+
+    def __init__(self, window=5):
+        self.window, self.seen = window, {}
+
+    def add(self, body, logit):
+        """One run's logit for body. Returns (P(resistor), tag) over its recent runs."""
+        runs = self.seen.setdefault(body, deque(maxlen=self.window))
+        runs.append(float(logit))
+        p = float(resistor_tag.probability(np.mean(runs)))
+        return p, resistor_tag.tag(p)
+
+    def keep_only(self, bodies):
+        self.seen = {b: v for b, v in self.seen.items() if b in set(bodies)}
+
+
+def tag_bodies(tagger, tag_views, model_view, polygons, ids=None):
+    """[(P(resistor), tag)] per polygon, from the colour model view; averaged per id when ids are given.
+    Without a tagger every body is (None, None): counted as a resistor."""
+    if tagger is None:
+        return [(None, None)] * len(polygons)
+    z = resistor_tag.logits(tagger, [resistor_tag.cutout(model_view, q) for q in polygons])
+    if ids is None:
+        return [(float(p), resistor_tag.tag(p)) for p in resistor_tag.probability(z)]
+    tags = [tag_views.add(i, v) for i, v in zip(ids, z)]
+    tag_views.keep_only(ids)
+    return tags
+
+
+def tag_text(p, tag):
+    return "" if tag is None else "not a resistor" if tag == "not" else f"{tag} {p:.2f}"
+
+
+def read_values(net, views, frame, cal, plain, polygons, ids=None, tags=None):
     """Each body's value as text, read as tools.read_plate reads it. ids: the bodies' ids (steady.Steady), to
-    average each one's reading over its recent runs; None reads this run alone."""
+    average each one's reading over its recent runs; None reads this run alone. tags: (P(resistor), tag) per
+    body: a body tagged "not" isn't read, and one tagged "unsure" is shown as a value to measure, not use."""
+    tags = tags or [(None, None)] * len(polygons)
     _, gains = rectify.white_balance(plain, cal.settings)          # crops keep the frame's own level
     balanced = np.clip(plain.astype(np.float32) * gains, 0, 255).astype(np.uint8)
     white = float(np.percentile(cv2.cvtColor(balanced, cv2.COLOR_BGR2GRAY)[150:1050, 150:1050], 70))
     notes = []
-    for i, poly in enumerate(polygons):
+    for i, (poly, (p, tag)) in enumerate(zip(polygons, tags)):
+        if tag == "not":
+            notes.append(tag_text(p, tag))
+            continue
         lp = learned.log_probs(net, crops.cut(frame, cal, poly, gains).image, white)
         r = views.add(ids[i], lp) if ids is not None else learned.decode(lp)
-        notes.append(f"{learned.ohms_text(r.value)} {r.confidence:.2f}" if r.value is not None
-                     else f"? {learned.ohms_text(r.best)} {r.confidence:.2f}")
+        if tag == "unsure":
+            notes.append(f"{tag_text(p, tag)}: ~{learned.ohms_text(r.best)}, measure")
+        else:
+            notes.append(f"{learned.ohms_text(r.value)} {r.confidence:.2f}" if r.value is not None
+                         else f"? {learned.ohms_text(r.best)} {r.confidence:.2f}")
     if ids is not None:
         views.keep_only(ids)
     return notes
@@ -166,6 +216,9 @@ def main(argv=None):
     parser.add_argument("--conf", type=float, default=0.5, help="confidence threshold (0.5)")
     parser.add_argument("--reader", type=Path, default=config.ROOT / "runs" / "band_reader_final" / "band_reader.pt",
                         help="band reader weights (values aren't shown if missing)")
+    parser.add_argument("--tagger", type=Path,
+                        default=config.ROOT / "models" / "resistor_tag_v1" / "resistor_tag.pt",
+                        help="resistor-or-not weights (every body counts as a resistor if missing)")
     args = parser.parse_args(argv)
     if not args.weights.exists():
         parser.error(f"no weights at {args.weights}; train first, e.g. python -m robot_offline.training.train_synth")
@@ -190,6 +243,10 @@ def main(argv=None):
     if net is None:
         print(f"No band reader at {args.reader}: no values")
     values, views = net is not None, learned.Views()
+    tagger = resistor_tag.load(args.tagger) if args.tagger.exists() else None
+    if tagger is None:
+        print(f"No resistor tag at {args.tagger}: every body counts as a resistor")
+    tag_views = TagViews()
     fitter = plate_search.Tracker(cap, settings, camera=camera,      # a hand over an edge: it keeps the last fit
                                   level=learned.READING_LEVEL if values else None)
 
@@ -219,7 +276,10 @@ def main(argv=None):
                     polygons, scores = held
                 else:
                     polygons, scores = [p for p, c in zip(polygons, scores) if c >= conf], [c for c in scores if c >= conf]
-                notes = read_values(net, views, frame, cal, plain, polygons, steady.ids if hold else None) if values else []
+                ids = steady.ids if hold else None
+                tags = tag_bodies(tagger, tag_views, model_view, polygons, ids)
+                notes = (read_values(net, views, frame, cal, plain, polygons, ids, tags) if values
+                         else [tag_text(p, t) for p, t in tags])
                 t1 = time.perf_counter()
                 bodies = [skeleton.body_skeleton(p) for p in polygons] if skeletons else []
                 post = time.perf_counter() - t1
@@ -244,7 +304,11 @@ def main(argv=None):
             plate = fitter.status()
             exposure = fitter.control.status() if fitter.follow else f"exposure fixed at {fixed[0]}, gain {fixed[1]}"
             shape = f"skeletons {post * 1000:.0f} ms" if skeletons else "skeletons off"
-            label(view, [f"{len(polygons)} resistor bodies   conf >= {conf:.2f} "
+            if cal is None or tagger is None:
+                found = f"{len(polygons)} bodies"
+            else:
+                found = f"{len(polygons)} bodies, {sum(t == 'resistor' for _, t in tags)} resistors"
+            label(view, [f"{found}   conf >= {conf:.2f} "
                          f"({'held over runs' if hold else 'each run alone'})   {mode}",
                          f"{rate:.1f} detections/s, {latency * 1000:.0f} ms each ({shape})   {plate}", exposure,
                          "q quit  v view  m model's input  +/- confidence  c find plate  e exposure  "
