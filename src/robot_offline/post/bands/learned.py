@@ -220,12 +220,25 @@ def ohms_text(ohms):
     return f"{ohms:g}"
 
 
+def deployed_min_confidence(saved):
+    """The confidence a value needs: configs/band_reader.toml [deploy] min_confidence if it is set (a
+    provisional, project-wide setting), else the model's own saved limit."""
+    try:
+        from robot_offline import config
+        override = config.load("band_reader").get("deploy", {}).get("min_confidence")
+    except Exception:           # no config: the model's own
+        override = None
+    return float(override) if override is not None else float(saved)
+
+
 def load(path):
     """The reader in eval mode. Weights from before the direction head load without one (has_direction
     False), and their readings weigh both ways equally, as they always did."""
     saved = torch.load(path, map_location="cpu", weights_only=True)
     net = (BandCTC if saved.get("kind") == "ctc" else BandNet)(saved["width"])
     net.temperature = float(saved.get("temperature", 1.0))     # BandCTC: scores divided by it (training fits it)
+    net.saved_min_confidence = float(saved.get("min_confidence", MIN_CONFIDENCE))   # its own limit, if it has one
+    net.min_confidence = deployed_min_confidence(net.saved_min_confidence)
     use_values(saved.get("values"))                             # the values it may answer; None for all in scope
     missing, _ = net.load_state_dict(saved["state"], strict=False)
     net.has_direction = not any(k.startswith("direction.") for k in missing)
@@ -248,8 +261,11 @@ def log_probs(net, image, white):
     return np.vstack([lp, ways])
 
 
-def read(net, image, white, min_confidence=MIN_CONFIDENCE):
-    """The Reading of a straightened crop (BGR, white balanced, the plate at `white`)."""
+def read(net, image, white, min_confidence=None):
+    """The Reading of a straightened crop (BGR, white balanced, the plate at `white`), answered at the
+    model's own limit (saved with it by training) unless min_confidence is given."""
+    if min_confidence is None:
+        min_confidence = getattr(net, "min_confidence", MIN_CONFIDENCE)
     return decode(log_probs(net, image, white), min_confidence)
 
 
@@ -261,14 +277,31 @@ class Views:
 
     def __init__(self, window=5, min_confidence=MIN_CONFIDENCE):
         self.window, self.min_confidence = window, min_confidence
-        self.seen = {}
+        self.seen, self.pinned = {}, {}
 
     def add(self, body, lp):
         """One view's log-probabilities for body (any hashable id). Returns its Reading over its views."""
         views = self.seen.setdefault(body, deque(maxlen=self.window))
         views.append(np.asarray(lp, np.float64))
-        return decode(np.mean(views, axis=0), self.min_confidence)
+        return self.reading(body)
+
+    def pin(self, body, lp):
+        """A view kept apart from the rolling window, such as the body's close-up: while the body stays,
+        it is averaged in with the same weight as the window's mean, as first capture and close-up were
+        averaged when the reader was scored (experiments/2026-11-11_band_reader_kit)."""
+        self.pinned[body] = np.asarray(lp, np.float64)
+
+    def reading(self, body):
+        """The body's Reading over its views (and its pinned view), or None if it has none."""
+        parts = []
+        if self.seen.get(body):
+            parts.append(np.mean(self.seen[body], axis=0))
+        if body in self.pinned:
+            parts.append(self.pinned[body])
+        return decode(np.mean(parts, axis=0), self.min_confidence) if parts else None
 
     def keep_only(self, bodies):
         """Forgets every body but these (the ones still in view)."""
-        self.seen = {b: v for b, v in self.seen.items() if b in set(bodies)}
+        keep = set(bodies)
+        self.seen = {b: v for b, v in self.seen.items() if b in keep}
+        self.pinned = {b: v for b, v in self.pinned.items() if b in keep}

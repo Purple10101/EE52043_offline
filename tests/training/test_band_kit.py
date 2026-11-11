@@ -127,3 +127,9 @@ def test_a_saved_temperature_scales_the_reading(tmp_path):
     a = learned.log_probs(learned.load(tmp_path / "a.pt"), image, 200)
     b = learned.log_probs(learned.load(tmp_path / "b.pt"), image, 200)
     assert np.allclose(a / 4, b, atol=1e-4)
+
+
+def test_the_saved_limit_has_a_margin():
+    assert bk.deployed_limit(0.99697) == pytest.approx(0.998)
+    assert bk.deployed_limit(0.95) == pytest.approx(0.951)
+    assert bk.deployed_limit(0.99995) == pytest.approx(0.9999)

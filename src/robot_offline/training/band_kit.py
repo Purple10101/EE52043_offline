@@ -253,6 +253,13 @@ def fit_temperature(scores, ohms, grid=np.geomspace(0.5, 100, 80)):
     return float(grid[int(np.argmin(nll))])
 
 
+def deployed_limit(limit):
+    """The limit saved with a model: validation's, rounded up to the next 0.001 and 0.001 more (at most
+    0.9999). Validation's limit sits just above its worst wrong answer, scored on the GPU; scored on the
+    CPU, as the robot runs, that answer can land on it (2026-11-11: 0.99697 gave 1 wrong, 0.998 none)."""
+    return float(min(0.9999, np.ceil(limit * 1000 - 1e-9) / 1000 + 0.001))
+
+
 def safe_limit(right, conf, floor=0.5):
     """The lowest confidence limit with no wrong answer at or above it (at least floor)."""
     wrong = conf[~right]
@@ -351,6 +358,10 @@ def train(out, device="cpu", data_path=OUT, cfg=None, epochs=None, limit_synth=N
     _, v_right, v_conf = score(lps[va | vv], kit["ohms"][va | vv])
     limit = safe_limit(v_right, v_conf)
     report["confidence_limit"] = limit
+    report["min_confidence"] = deployed_limit(limit)
+    saved = torch.load(out / "band_reader.pt", map_location="cpu", weights_only=True)
+    saved["min_confidence"] = report["min_confidence"]            # learned.load applies it
+    torch.save(saved, out / "band_reader.pt")
     for name, mask in (("val", va), ("val_values", vv), ("test", te)):
         if not mask.any():
             continue

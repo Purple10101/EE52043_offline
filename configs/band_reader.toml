@@ -27,3 +27,11 @@ batch = 64
 lr = 3e-3
 kit_repeat = 3          # the kit's training crops are seen this many times an epoch, against synth's once
 direction_weight = 1.0  # the direction head's loss against the slots'
+
+[deploy]
+# PROVISIONAL (2026-11-11, at the user's request, for live tests in EE52043 before the ohmmeter backup
+# exists): the confidence a band value needs, for every tool that loads the reader (learned.load). Leave it
+# out to use each model's own limit, saved with it (band_reader_kit_v1: 0.998, 0 wrong of 518 held-out
+# placement crops, 51% answered). At 0.7, on the same held-out placements: 97% of crops answered, 1.6%
+# of the answers wrong (1.2% of bodies), mostly multiplier mix-ups (1k read as 680R, 1k5 as 150R, 5k1 as 510R).
+min_confidence = 0.7

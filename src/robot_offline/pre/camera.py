@@ -62,10 +62,14 @@ def open_camera(camera=None):
 # --- On-screen helpers ----------------------------------------------------------------------------
 
 def label(img, lines):
-    """Text lines in the top-left corner, white with a dark outline so they read on the plate too."""
+    """Text lines in the top-left corner, white on a dark translucent strip so they read on the plate too.
+    (Not a thick black outline under thin white text: Hershey letters are spaced by stroke thickness, so the
+    outline ran longer than the text and the two drifted apart along the line.)"""
     for i, text in enumerate(lines):
         y = 26 + 26 * i
-        cv2.putText(img, text, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 0, 0), 4, cv2.LINE_AA)
+        (w, h), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.65, 1)
+        x1, y0, y1 = min(img.shape[1], 18 + w), max(0, y - h - 7), min(img.shape[0], y + 7)
+        img[y0:y1, 4:x1] = (img[y0:y1, 4:x1] * 0.35).astype(img.dtype)
         cv2.putText(img, text, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 1, cv2.LINE_AA)
     return img
 

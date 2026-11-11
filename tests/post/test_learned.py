@@ -124,3 +124,39 @@ def test_a_model_can_be_limited_to_the_kits_values(tmp_path):
     finally:
         learned.use_values(None)
     assert len(learned._OHMS) == len(learned.ALL_CANDIDATES)
+
+
+def test_a_pinned_close_up_counts_half_while_the_body_stays():
+    views = learned.Views(window=5, min_confidence=0.9)
+    sure = _views_of(("yellow", "violet", "black", "brown", "brown"), sharpness=8.0)
+    unsure = _views_of(("yellow", "violet", "black", "brown", "brown"), sharpness=0.5)
+    live = views.add("a", unsure)
+    assert live.value is None
+    views.pin("a", sure)
+    both = views.reading("a")
+    assert both.confidence > live.confidence and both.best == 4700
+    assert views.add("a", unsure).confidence == pytest.approx(both.confidence)
+    views.keep_only(["b"])
+    assert views.reading("a") is None and not views.pinned
+
+
+def test_a_model_carries_its_own_limit(tmp_path):
+    net = learned.BandCTC(8)
+    image = np.full((60, 200, 3), 200, np.uint8)
+    torch.save({"width": 8, "kind": "ctc", "min_confidence": 0.998, "state": net.state_dict()}, tmp_path / "m.pt")
+    loaded = learned.load(tmp_path / "m.pt")
+    assert loaded.saved_min_confidence == 0.998
+    assert loaded.min_confidence == learned.deployed_min_confidence(0.998)
+    torch.save({"width": 8, "kind": "ctc", "state": net.state_dict()}, tmp_path / "old.pt")
+    assert learned.load(tmp_path / "old.pt").saved_min_confidence == learned.MIN_CONFIDENCE
+    r = learned.read(loaded, image, 200)
+    assert r.value is None or r.confidence >= loaded.min_confidence
+
+
+def test_the_deploy_setting_overrides_a_models_own_limit(monkeypatch):
+    from robot_offline import config
+    monkeypatch.setattr(config, "load", lambda name, *a: {"deploy": {"min_confidence": 0.7}})
+    assert learned.deployed_min_confidence(0.998) == 0.7
+    monkeypatch.setattr(config, "load", lambda name, *a: {})
+    assert learned.deployed_min_confidence(0.998) == 0.998
+    learned.use_values(None)

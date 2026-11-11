@@ -40,7 +40,7 @@ def test_read_values_skips_not_and_never_gives_unsure_a_value(monkeypatch):
     monkeypatch.setattr(ld.rectify, "white_balance", lambda plain, s: (plain, np.ones(3)))
     monkeypatch.setattr(ld.crops, "cut", lambda frame, cal, poly, gains: type("C", (), {"image": poly})())
     monkeypatch.setattr(learned, "log_probs", lambda net, image, white: read.append(image) or "lp")
-    monkeypatch.setattr(learned, "decode", lambda lp: learned.Reading(4700.0, 4700.0, 0.99, ("yellow", "violet")))
+    monkeypatch.setattr(learned, "decode", lambda lp, *limit: learned.Reading(4700.0, 4700.0, 0.99, ("yellow", "violet")))
     cal = type("Cal", (), {"settings": None})()
     plain = np.full((1200, 1200, 3), 200, np.uint8)
     polys = ["a", "b", "c", "d"]

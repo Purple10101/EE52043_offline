@@ -1055,5 +1055,6 @@
    }
   },
   "colours_read_right": 0.944015444015444
- }
+ },
+ "min_confidence": 0.998
 }
