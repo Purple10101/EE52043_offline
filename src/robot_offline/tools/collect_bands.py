@@ -36,7 +36,7 @@ from robot_offline import config
 from robot_offline.inf import tiling
 from robot_offline.post import resistor_tag
 from robot_offline.post.bands import closeup, crops, learned
-from robot_offline.pre import plate_search, rectify
+from robot_offline.pre import focus, plate_search, rectify
 from robot_offline.pre.camera import open_camera, show
 
 WINDOW = "collect bands"
@@ -184,10 +184,14 @@ def exclude(capture, session, why):
     return dest
 
 
-def capture(cap, tracker, seg, grey, tagger, camera, closeups, out, models=None):
-    """One placement: averaged frame, segmentation, tags, close-ups; written to out. Returns a summary line
-    and the top-down view with the bodies drawn."""
+def capture(cap, tracker, seg, grey, tagger, camera, closeups, out, models=None, focuser=None):
+    """One placement: a focus check (focuser, pre/focus.py), averaged frame, segmentation, tags, close-ups;
+    written to out. Returns a summary line and the top-down view with the bodies drawn."""
     t0 = time.perf_counter()
+    checked = None
+    if focuser is not None:
+        focuser.cal = tracker.cal
+        checked = focuser.check()
     for _ in range(closeup.SETTLE):
         cap.read()
     frame = closeup.mean_frame(cap, 8)
@@ -229,8 +233,9 @@ def capture(cap, tracker, seg, grey, tagger, camera, closeups, out, models=None)
         x, y = np.round(poly.min(0)).astype(int)
         cv2.putText(shown, f"{n}" + ("" if tag in (None, "resistor") else f" {tag}"), (int(x), int(y) - 4),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, colour, 2, cv2.LINE_AA)
-    settings = dict(focus=camera["camera"]["focus"], exposure=cap.get(cv2.CAP_PROP_EXPOSURE),
-                    gain=cap.get(cv2.CAP_PROP_GAIN), frames_averaged=8)
+    settings = dict(focus=checked.focus if checked else camera["camera"]["focus"],
+                    focus_offset=checked.offset if checked else None, focus_by=checked.reference if checked else None,
+                    exposure=cap.get(cv2.CAP_PROP_EXPOSURE), gain=cap.get(cv2.CAP_PROP_GAIN), frames_averaged=8)
     seconds = round(time.perf_counter() - t0, 1)
     (out / "capture.json").write_text(json.dumps(dict(camera=settings, white=round(white, 1), seconds=seconds, conf=CONF, models=models,
                                                       bodies=bodies), indent=1))
@@ -317,6 +322,7 @@ def main(argv=None):
     index = next((i for i in range(len(values)) if len(done_captures(session / folder_name(values[i], markings[i]))) < per_value),
                  len(values))
     message, result, preview, next_preview, shown = "", None, None, 0.0, None
+    focuser = None                  # the focus check, made at the first capture (pre/focus.py)
     try:
         while True:
             ok, frame = cap.read()
@@ -413,7 +419,10 @@ def main(argv=None):
                                        ("Close-ups take about 3.5 s per resistor." if not args.no_closeups else "", "text")])
                 shown = show(busy, shown, WINDOW)
                 cv2.waitKey(1)
-                line, result = capture(cap, tracker, seg, grey, tagger, camera, not args.no_closeups, target, models)
+                if focuser is None:
+                    focuser = focus.FocusTracker(cap, tracker.cal, camera=camera)
+                line, result = capture(cap, tracker, seg, grey, tagger, camera, not args.no_closeups, target, models,
+                                       focuser)
                 write_labels(session)
                 saved = (target / "capture.json").exists()
                 message = f"Placement {n}: {line}." + (" SPACE to go on, r to redo it." if saved else " SPACE to go back.")

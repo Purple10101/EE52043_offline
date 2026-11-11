@@ -93,10 +93,21 @@ def test_one_closeup_per_body_in_focus_order_and_the_focus_put_back(monkeypatch)
     cap = FakeCap()
     model = closeup.FocusModel([[233.0, 322.0], [275.0, 294.0]])
     polygons = [np.full((4, 2), i, float) for i in range(3)]
-    out = closeup.take(cap, None, polygons, model=model, camera={"camera": {"focus": 306}})
+    out = closeup.take(cap, None, polygons, model=model, camera={"camera": {"focus": 306}}, offset=0.0, restore=306)
     assert [c.body for c in out] == [0, 1, 2]
     assert [c.focus for c in out] == [model.focus(275.0), model.focus(233.0), model.focus(250.0)]
-    assert cap.set_log[:-1] == sorted(cap.set_log[:-1])     # the lens moves one way only
-    assert cap.set_log[-1] == 306                           # and back to the config's focus
+    assert cap.set_log[:-2] == sorted(cap.set_log[:-2])     # the lens moves one way only
+    assert cap.set_log[-2:] == [296, 306]                   # and back to the focus given, from below
     assert seen == [f % 256 for f in sorted(c.focus for c in out)]   # each crop from its own capture
     assert not any(c.found_again for c in out)              # no segmentation model given
+
+
+def test_the_focus_plan_shifts_every_body_by_the_measured_offset(monkeypatch):
+    distances = {0: 275.0, 1: 233.0}
+    monkeypatch.setattr(closeup, "distance_mm", lambda cal, p: distances[int(p[0, 0])])
+    model = closeup.FocusModel([[233.0, 322.0], [275.0, 294.0]])
+    polygons = [np.full((4, 2), i, float) for i in range(2)]
+    plain = closeup.focus_plan(None, polygons, model)
+    shifted = closeup.focus_plan(None, polygons, model, offset=9.0)
+    assert [f for f, _ in shifted] == [f + 9 for f, _ in plain]
+    assert [i for _, i in shifted] == [0, 1]                 # lowest focus first

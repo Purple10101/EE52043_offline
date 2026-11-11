@@ -141,16 +141,31 @@ def _found_again(seg, grey, frame, cal, plain, polygon):
     return np.asarray(polys[i], float) if d[i] <= MATCH_PX else None
 
 
+def focus_plan(cal, polygons, model, offset=0.0):
+    """[(focus, body index)], lowest focus first (so the lens always arrives from below): the rule's focus
+    for each body's distance, shifted by offset (pre/focus.py: the lens's offset from the rule, now)."""
+    return sorted((int(round(np.clip(model.focus(distance_mm(cal, p)) + offset, *FOCUS_LIMITS))), i)
+                  for i, p in enumerate(polygons))
+
+
 def take(cap, cal, polygons, seg=None, grey=False, model=None, settle=SETTLE, average=AVERAGE, keep_frames=False,
-         camera=None):
+         camera=None, offset=None, restore=None):
     """One close-up per body outline (rectified px, from segmentation on this plate), in the bodies' order.
 
     cap: the live camera, exposure already set for reading. seg, grey: the segmentation model and whether
     it takes grey, to find each body again in its close-up (None: use the outlines given). model: the
-    FocusModel, default from camera.toml. The focus is set back to camera.toml's afterwards."""
+    FocusModel, default from camera.toml. offset: added to the rule's focus for every body; None takes it
+    from the last focus check (pre/focus.py) while that is fresh, else 0. restore: the focus set
+    afterwards; None: the last focus check's, while fresh, else camera.toml's."""
+    from robot_offline.pre import focus as focus_check
     camera = camera or config.load("camera")
     model = model or FocusModel.from_config(camera)
-    plan = sorted(((model.focus(distance_mm(cal, p)), i) for i, p in enumerate(polygons)))
+    checked = focus_check.current()
+    if offset is None:
+        offset = checked.offset if checked else 0.0
+    if restore is None:
+        restore = checked.focus if checked else camera["camera"]["focus"]
+    plan = focus_plan(cal, polygons, model, offset)
     out = {}
     try:
         for focus, i in plan:
@@ -173,7 +188,7 @@ def take(cap, cal, polygons, seg=None, grey=False, model=None, settle=SETTLE, av
                              sharpness(crop.image), frame if keep_frames else None,
                              {s: round(b - a, 3) for s, a, b in zip(steps, ticks, ticks[1:])})
     finally:
-        cap.set(cv2.CAP_PROP_FOCUS, camera["camera"]["focus"])
+        focus_check.set_focus(cap, restore)
     return [out[i] for i in range(len(polygons))]
 
 

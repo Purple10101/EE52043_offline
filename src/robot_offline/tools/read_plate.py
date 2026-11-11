@@ -29,7 +29,7 @@ from robot_offline import config
 from robot_offline.inf import tiling
 from robot_offline.post import resistor_tag
 from robot_offline.post.bands import closeup, crops, learned
-from robot_offline.pre import exposure, plate_search, rectify
+from robot_offline.pre import exposure, focus, plate_search, rectify
 from robot_offline.pre.camera import open_camera
 
 
@@ -111,13 +111,17 @@ def main(argv=None):
                 raise SystemExit(f"plate not found: {e}")
         print("plate found:", plate_search.describe(cal), flush=True)
         ticks["plate found, exposure set"] = time.perf_counter()
+        # The focus measured now, on the plate's centre cross (pre/focus.py): the lens drifts as it warms.
+        checked = focus.FocusTracker(cap, cal, camera=camera).check()
+        print("focus checked:", checked, flush=True)
+        ticks["focus check"] = time.perf_counter()
         for _ in range(closeup.SETTLE):
             cap.read()
         frame = closeup.mean_frame(cap, 8)
         ticks["first capture (8 frames)"] = time.perf_counter()
         # As set, for telling captures apart later: band crops depend on all three (focus 314 before 2026-11-09).
-        settings = dict(focus=camera["camera"]["focus"], exposure=cap.get(cv2.CAP_PROP_EXPOSURE),
-                        gain=cap.get(cv2.CAP_PROP_GAIN), frames_averaged=8)
+        settings = dict(focus=checked.focus, focus_offset=checked.offset, focus_by=checked.reference,
+                        exposure=cap.get(cv2.CAP_PROP_EXPOSURE), gain=cap.get(cv2.CAP_PROP_GAIN), frames_averaged=8)
         print(settings, flush=True)
         cv2.imwrite(str(out / "0001.png"), frame)
         cal.save(out / "rectify.json")

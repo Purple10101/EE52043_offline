@@ -52,7 +52,7 @@ Keys:  q / Esc  quit      v  camera view / top-down view      m  top-down: what 
        e  exposure following the light, or fixed      k  skeleton, spine and centroid shown or hidden
        h  detections held steady over runs, or each run on its own      b  band values on or off
        u  close-up of every body, read and folded into its value      t  readings panel / shapes panel
-       [ / ]  confidence a value needs, down / up
+       [ / ]  confidence a value needs, down / up      f  check the focus on the plate's centre cross
 """
 
 import argparse
@@ -70,7 +70,7 @@ from robot_offline.inf import tiling
 from robot_offline.inf.steady import FLOOR, Steady
 from robot_offline.post import resistor_tag, skeleton
 from robot_offline.post.bands import closeup, crops, learned, value
-from robot_offline.pre import plate_search, rectify
+from robot_offline.pre import focus, plate_search, rectify
 from robot_offline.pre.camera import label, open_camera, show
 
 WINDOW = "robot_offline live detection"
@@ -430,6 +430,7 @@ def main(argv=None):
     fitter = plate_search.Tracker(cap, settings, camera=camera, cal=last, locked=last is not None,
                                   level=learned.READING_LEVEL if values else None)   # a hand over an edge: it keeps the fit
     message, message_until = "", 0.0
+    focuser = None                  # the focus check (pre/focus.py): first when the plate is found, then on f and u
 
     cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
     top_down, masked, conf, skeletons, hold = False, False, args.conf, True, True
@@ -442,6 +443,12 @@ def main(argv=None):
         if not ok:
             continue
         cal = fitter.update(frame)
+        if cal is not None and focuser is None:
+            # The lens drifts as the camera warms (pre/focus.py): measure the focus before showing anything.
+            focuser = focus.FocusTracker(cap, cal, camera=camera)
+            print("Checking the focus on the plate's centre cross (about 20 s)...", flush=True)
+            r = focuser.check()
+            message, message_until = f"focus checked: {r.focus} ({r.reference})", time.perf_counter() + 6
         now = time.perf_counter()
 
         if now >= next_run:
@@ -491,6 +498,8 @@ def main(argv=None):
             mode = ("top-down, as the model sees it" if masked else "top-down") if top_down else "camera view"
             plate = fitter.status()
             exposure = fitter.control.status() if fitter.follow else f"exposure fixed at {fixed[0]}, gain {fixed[1]}"
+            if focuser is not None:
+                exposure += "   " + focuser.status()
             shape = f"skeletons {post * 1000:.0f} ms" if skeletons else "skeletons off"
             if cal is None or tagger is None:
                 found = f"{len(polygons)} bodies"
@@ -504,7 +513,7 @@ def main(argv=None):
                          f"{rate:.1f} detections/s, {latency * 1000:.0f} ms each ({shape})   {plate}", exposure]
                   + ([message] if message and time.perf_counter() < message_until else [])
                   + ["q quit  v view  m model's input  +/- confidence  c find plate  e exposure  "
-                     "k skeletons  h hold  b values  u close-ups  t panel  [ ] limit  s save"])
+                     "k skeletons  h hold  b values  u close-ups  f focus  t panel  [ ] limit  s save"])
             shown = show(view, shown, WINDOW)
 
         key = cv2.waitKey(1) & 0xFF
@@ -537,10 +546,19 @@ def main(argv=None):
             message, message_until = f"a value now needs confidence {views.min_confidence:g}", time.perf_counter() + 4
         elif key == ord("t"):
             readings_view, next_run = not readings_view, 0.0
+        elif key == ord("f") and cal is not None:
+            focuser = focuser or focus.FocusTracker(cap, cal, camera=camera)
+            focuser.cal = cal
+            r = focuser.check(polygons=polygons)
+            message, message_until, next_run = f"focus checked: {r.focus} ({r.reference}, {r.seconds:.1f} s)", \
+                time.perf_counter() + 6, 0.0
         elif key == ord("u"):
             if not (values and hold and cal is not None and polygons):
                 message = "close-ups need values on (b), detections held (h) and bodies in view"
             else:
+                focuser = focuser or focus.FocusTracker(cap, cal, camera=camera)
+                focuser.cal = cal
+                focuser.check(polygons=polygons)        # the close-ups use its offset
                 n, secs, taken = take_closeups(cap, cal, net, views, polygons, list(steady.ids), tags, model, grey,
                                                camera)
                 close_crops.update(taken)
