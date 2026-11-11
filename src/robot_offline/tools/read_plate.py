@@ -69,6 +69,10 @@ def main(argv=None):
     p.add_argument("reader_weights")
     p.add_argument("picture")
     p.add_argument("--closeups", action="store_true", help="also read each body from its own close-up")
+    p.add_argument("--last-fit", action="store_true",
+                   help="use where the plate was last found (data/plate/last_rectify.json) instead of searching: "
+                        "for a rig that hasn't moved, when parts on the plate (a lead over the centre cross) "
+                        "stop the search")
     p.add_argument("--tagger", default=str(config.ROOT / "models" / "resistor_tag_v1" / "resistor_tag.pt"),
                    help="resistor-or-not weights; if missing, every body counts as a resistor")
     args = p.parse_args(argv)
@@ -86,11 +90,25 @@ def main(argv=None):
     cap = open_camera(camera)
     ticks = {"start": time.perf_counter()}
     try:
-        try:                                # found dim, then the plate brought to READING_LEVEL for the bands
-            cal = plate_search.find_now(cap, camera=camera, level=learned.READING_LEVEL)
-        except rectify.PlateNotFound as e:
-            out.rmdir()
-            raise SystemExit(f"plate not found: {e}")
+        if args.last_fit:                   # the last fit as it is; only the exposure brought to READING_LEVEL
+            tracker = plate_search.Tracker(cap, rectify.Settings.from_config(ds), camera=camera,
+                                           cal=rectify.Calibration.load(plate_search.LAST), locked=True,
+                                           level=learned.READING_LEVEL)
+            end = time.perf_counter() + 30
+            while time.perf_counter() < end:
+                ok, f = cap.read()
+                if ok:
+                    tracker.update(f)
+                    if tracker.control.settled:
+                        break
+            tracker.close()
+            cal = tracker.cal
+        else:
+            try:                            # found dim, then the plate brought to READING_LEVEL for the bands
+                cal = plate_search.find_now(cap, camera=camera, level=learned.READING_LEVEL)
+            except rectify.PlateNotFound as e:
+                out.rmdir()
+                raise SystemExit(f"plate not found: {e}")
         print("plate found:", plate_search.describe(cal), flush=True)
         ticks["plate found, exposure set"] = time.perf_counter()
         for _ in range(closeup.SETTLE):

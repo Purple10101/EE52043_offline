@@ -41,7 +41,7 @@ def test_an_uncertain_band_is_unknown_but_keeps_its_best_guess():
 
 def test_only_values_in_scope_can_come_out():
     r = learned.decode(np.log(np.full((learned.SLOTS, len(learned.COLOURS)), 1 / len(learned.COLOURS))))
-    assert 10 <= r.best <= 10000
+    assert r.best == 0 or learned.SCOPE_OHM[0] <= r.best <= learned.SCOPE_OHM[1]
     assert r.value is None
 
 
@@ -76,3 +76,51 @@ def test_views_average_out_one_bad_view_and_forget_bodies_gone():
 def test_values_are_written_as_on_a_parts_list():
     assert [learned.ohms_text(v) for v in (100, 470, 1000, 4700, 10000, 1500000)] == \
         ["100", "470", "1k", "4k7", "10k", "1M5"]
+
+
+def test_the_kit_range_is_in_scope_and_values_dont_split_by_rounding():
+    for colours, ohms in ((("black",), 0), (("red", "red", "black", "silver", "brown"), 2.2),
+                          (("brown", "green", "black", "red", "brown"), 15000),
+                          (("green", "blue", "black", "yellow", "brown"), 5.6e6)):
+        r = learned.decode(_log_probs(colours))
+        assert r.value == pytest.approx(ohms) and r.confidence > 0.9
+    assert len({o for o, _ in learned._CANDIDATES if abs(o - 2.2) < 1e-6}) == 1
+
+
+def test_a_value_that_reads_as_another_backwards_needs_the_direction():
+    ten_k = ("brown", "black", "black", "red", "brown")         # 120R backwards
+    alone = learned.decode(_log_probs(ten_k))
+    assert alone.value is None and 0.4 < alone.confidence < 0.6
+    ways = np.zeros((1, len(learned.COLOURS)))
+    ways[0, :2] = np.log([0.99, 0.01])                          # sure it reads left to right
+    r = learned.decode(np.vstack([_log_probs(ten_k), ways]))
+    assert r.value == 10000 and r.confidence > 0.95
+
+
+def test_old_weights_load_without_a_direction_head(tmp_path):
+    net = learned.BandNet(8)
+    state = {k: v for k, v in net.state_dict().items() if not k.startswith("direction.")}
+    torch.save({"width": 8, "state": state}, tmp_path / "old.pt")
+    old = learned.load(tmp_path / "old.pt")
+    assert not old.has_direction
+    image = np.full((60, 200, 3), 200, np.uint8)
+    assert learned.log_probs(old, image, 200).shape == (learned.SLOTS, len(learned.COLOURS))
+    torch.save({"width": 8, "state": net.state_dict()}, tmp_path / "new.pt")
+    assert learned.log_probs(learned.load(tmp_path / "new.pt"), image, 200).shape == (learned.SLOTS + 1, len(learned.COLOURS))
+
+
+def test_a_model_can_be_limited_to_the_kits_values(tmp_path):
+    try:
+        learned.use_values([1000.0, 4700.0, 0.0])
+        assert set(learned._OHMS) == {0.0, 1000.0, 4700.0}
+        r = learned.decode(_log_probs(("orange", "orange", "black", "yellow", "brown")))      # 3M3: not allowed
+        assert r.best in (0.0, 1000.0, 4700.0) and r.value is None
+        net = learned.BandCTC(8)
+        torch.save({"width": 8, "kind": "ctc", "values": [1000.0, 4700.0], "state": net.state_dict()}, tmp_path / "k.pt")
+        learned.load(tmp_path / "k.pt")
+        assert set(learned._OHMS) == {1000.0, 4700.0}
+        with pytest.raises(ValueError):
+            learned.use_values([3333.0])
+    finally:
+        learned.use_values(None)
+    assert len(learned._OHMS) == len(learned.ALL_CANDIDATES)

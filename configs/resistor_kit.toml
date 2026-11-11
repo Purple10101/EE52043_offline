@@ -1,0 +1,18 @@
+# The resistor kit (MIUZEI 1475 pcs, arrived 2026-11-10), in the order tools/collect_bands.py asks for them:
+# the kit card's columns, top to bottom. 1% metal film, 5-band (tolerance brown), blue bodies, 1/4 W,
+# 25 of each, 50 of 100R, 220R, 330R, 1k and 10k. Write each as on its strip:
+# 0R, 4R7, 220R, 4k7, 1M, or plain ohms.
+# The card says 23R; the strip and parts are 33R (checked 2026-11-10). Its "23k" is probably 33k: check that strip.
+# "diode" is the kit's 50 rectifier diodes: captured like a value, labelled not a resistor.
+
+captures = 5          # placements captured per value
+per_plate = 8         # parts put on the plate per placement
+
+values = [
+    "0R", "1R", "2R2", "4R7", "7R5", "10R", "15R", "20R", "22R", "33R", "39R",
+    "47R", "56R", "68R", "100R", "120R", "150R", "220R", "270R", "330R", "390R", "470R",
+    "510R", "680R", "1k", "1k5", "2k", "2k2", "3k", "4k7", "5k1", "5k6", "7k5",
+    "8k2", "10k", "15k", "22k", "23k", "47k", "56k", "68k", "75k", "100k", "150k",
+    "220k", "330k", "470k", "680k", "1M", "2M", "4M7", "5M6",
+    "diode",
+]

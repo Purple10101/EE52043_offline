@@ -214,7 +214,7 @@ def main(argv=None):
     parser.add_argument("--weights", type=Path, default=config.ROOT / "models" / "seg_grey_v2" / "best.pt")
     parser.add_argument("--fps", type=float, default=3.0, help="detections per second (3)")
     parser.add_argument("--conf", type=float, default=0.5, help="confidence threshold (0.5)")
-    parser.add_argument("--reader", type=Path, default=config.ROOT / "runs" / "band_reader_final" / "band_reader.pt",
+    parser.add_argument("--reader", type=Path, default=config.ROOT / "models" / "band_reader_kit_v1" / "band_reader.pt",
                         help="band reader weights (values aren't shown if missing)")
     parser.add_argument("--tagger", type=Path,
                         default=config.ROOT / "models" / "resistor_tag_v1" / "resistor_tag.pt",

@@ -1,0 +1,29 @@
+# Training the band reader (post/bands/learned.py) on the resistor kit's crops (tools/collect_bands.py).
+# Read by training/band_kit.py.
+
+[kit]
+sessions = ["2026-11-10"]            # under data/bands/kit/
+
+# Never trained on, nor used to choose anything: the test. Chosen 2026-11-10 before any training, so that
+# every multiplier band (silver to yellow) has one value out and still several values in training, and
+# every digit colour stays in training.
+test_values = ["2R2", "15R", "56R", "270R", "1k5", "5k6", "22k", "330k", "4M7"]
+
+# Also never trained on: these choose the epoch and set the confidence limit, so both are judged on values
+# the reader hasn't seen. Added 2026-11-11 after run v1, whose limit, set on new placements of trained
+# values, gave 0 wrong there and 7 wrong (0 right) on the test values. One per multiplier band (silver
+# to yellow), and checked (experiments/2026-11-11_band_reader_kit/check_split.py) to leave every test and
+# validation value's colours in their positions in training once the kit is finished.
+validation_values = ["4R7", "20R", "680R", "3k", "47k", "220k", "2M"]
+
+# Of every other value, this many whole placements (every body in them, first capture and close-up) are kept
+# out of training for validation: choosing the epoch and the confidence limit. Which ones rotates with the
+# value, so validation covers every kind of placement (spread, flipped, other half, fresh parts, edges).
+validation_placements = 1
+
+[train]
+epochs = 40
+batch = 64
+lr = 3e-3
+kit_repeat = 3          # the kit's training crops are seen this many times an epoch, against synth's once
+direction_weight = 1.0  # the direction head's loss against the slots'

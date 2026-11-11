@@ -48,6 +48,8 @@ E24 = (10, 11, 12, 13, 15, 16, 18, 20, 22, 24, 27, 30,
        33, 36, 39, 43, 47, 51, 56, 62, 68, 75, 82, 91)
 MULTIPLIERS = {"gold": 0.1, "black": 1, "brown": 10, "red": 100, "orange": 1000}
 VALUE_RANGE_OHM = (10.0, 10000.0)      # docs/classification.md
+ALL_MULTIPLIERS = {"silver": 0.01, "gold": 0.1, "black": 1, "brown": 10, "red": 100, "orange": 1000,
+                   "yellow": 1e4, "green": 1e5, "blue": 1e6}
 
 BODY_SHOWS = 0.3            # how much the body under a band darkens it: 0 opaque paint, 1 a pure filter
 BLEED = 0.15                # share of a band's a* and b* that is the body's, from MJPG's coarse colour
@@ -204,12 +206,13 @@ def find_bands(line):
     return tuple(bands), body
 
 
-def candidates(value_range=VALUE_RANGE_OHM):
-    """Every (ohms, band colours) in scope: 4-band E24 with gold, 5-band E24 with brown."""
+def candidates(value_range=VALUE_RANGE_OHM, multipliers=None):
+    """Every (ohms, band colours) in scope: 4-band E24 with gold, 5-band E24 with brown. multipliers: the
+    multiplier bands allowed (name: factor), MULTIPLIERS by default; ALL_MULTIPLIERS for any value."""
     out = []
     for significant in E24:
         a, b = divmod(significant, 10)
-        for name, factor in MULTIPLIERS.items():
+        for name, factor in (multipliers or MULTIPLIERS).items():
             if value_range[0] <= significant * factor <= value_range[1]:
                 out.append((significant * factor, (DIGITS[a], DIGITS[b], name, "gold")))
             if value_range[0] <= significant * 10 * factor <= value_range[1]:

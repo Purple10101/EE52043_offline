@@ -23,3 +23,6 @@ weights/
 *.onnx
 # Released models are kept, in Git LFS (see .gitattributes)
 !models/**/*.pt
+
+# Experiments: kept on this machine, not in git (from 2026-11-11). Folders committed before then stay tracked.
+experiments/
